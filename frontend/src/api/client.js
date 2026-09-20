@@ -1,4 +1,7 @@
-const BASE = '/api'
+// In dev this stays relative and Vite proxies it. In production there is no proxy, so
+// the deployed build points straight at the API host via VITE_API_BASE, which Vite
+// inlines at build time -- changing it needs a redeploy, not just a restart.
+const BASE = import.meta.env.VITE_API_BASE ?? '/api'
 
 async function expectOk(res) {
   if (res.ok) return res

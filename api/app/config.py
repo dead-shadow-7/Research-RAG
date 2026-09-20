@@ -80,6 +80,9 @@ class Settings(BaseSettings):
     # Kept as a plain string: pydantic-settings tries to JSON-decode list-typed
     # env vars, which makes a bare comma-separated value a validation error.
     cors_origins: str = "http://localhost:5173"
+    # Vercel gives every preview deploy its own hostname, so a fixed list can never
+    # cover them. Empty disables the pattern match entirely.
+    cors_origin_regex: str = ""
 
     @property
     def cors_origin_list(self) -> list[str]:
