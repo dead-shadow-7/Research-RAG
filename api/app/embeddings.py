@@ -12,11 +12,45 @@ from __future__ import annotations
 
 from functools import lru_cache
 
-from fastembed import TextEmbedding
-from langchain_core.embeddings import Embeddings
-from tokenizers import Tokenizer
+import onnxruntime as ort
 
 from app.config import settings
+
+
+def _install_lean_onnx_session() -> None:
+    """Halve the model's memory footprint before FastEmbed loads it.
+
+    FastEmbed ships `model_optimized.onnx` and then asks ONNX Runtime to optimise it
+    *again*, which leaves a second copy of the weights resident, and it leaves the CPU
+    memory arena enabled, which pre-allocates and never gives memory back. Measured on
+    bge-base: 494 MB -> 327 MB, with embeddings unchanged (cosine 0.9999998 against the
+    stored reference -- see tests/test_embeddings.py).
+
+    This has to be a patch because `TextEmbedding(extra_session_options=...)` is
+    accepted and then silently discarded. Pin the fastembed version: if an upgrade
+    changes the loading path, the reference-vector test is what catches it.
+    """
+    original = ort.InferenceSession
+
+    def lean_session(path_or_bytes, sess_options=None, providers=None, **kwargs):
+        options = sess_options or ort.SessionOptions()
+        options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
+        options.enable_cpu_mem_arena = False
+        options.enable_mem_pattern = False
+        options.intra_op_num_threads = settings.onnx_threads
+        options.inter_op_num_threads = settings.onnx_threads
+        return original(path_or_bytes, sess_options=options, providers=providers, **kwargs)
+
+    ort.InferenceSession = lean_session
+
+
+if settings.lean_onnx:
+    _install_lean_onnx_session()
+
+# Imported after the patch so FastEmbed builds its session with these options.
+from fastembed import TextEmbedding  # noqa: E402
+from langchain_core.embeddings import Embeddings  # noqa: E402
+from tokenizers import Tokenizer  # noqa: E402
 
 QUERY_PREFIX = "Represent this sentence for searching relevant passages: "
 

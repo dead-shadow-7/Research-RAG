@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from contextlib import asynccontextmanager
 
 import redis.asyncio as aioredis
@@ -8,17 +9,30 @@ from sqlalchemy import text
 
 from app.config import settings
 from app.db import engine
+from app.ingestion.pipeline import fail_stale_documents
 from app.queue import close_pool, init_pool
 from app.routers import chat, documents
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    await init_pool()
+    if settings.inline_ingestion:
+        # No worker exists to do it, and anything mid-flight when this process last
+        # died has no job left to finish it.
+        cleared = await fail_stale_documents()
+        if cleared:
+            logger.warning("cleared %d document(s) interrupted by a restart", cleared)
+    else:
+        await init_pool()
+
     yield
-    await close_pool()
+
+    if not settings.inline_ingestion:
+        await close_pool()
     await engine.dispose()
 
+
+logger = logging.getLogger(__name__)
 
 app = FastAPI(title="RAG API", version="0.1.0", lifespan=lifespan)
 
@@ -61,7 +75,9 @@ async def _probe_pinecone() -> str:
 async def health() -> dict:
     """Per-service status. Never raises -- a failing dependency is reported, not hidden."""
     results: dict[str, str] = {}
-    probes = (("database", _probe_db), ("redis", _probe_redis), ("pinecone", _probe_pinecone))
+    probes = [("database", _probe_db), ("pinecone", _probe_pinecone)]
+    if not settings.inline_ingestion:
+        probes.insert(1, ("redis", _probe_redis))
     for name, probe in probes:
         try:
             results[name] = await probe()

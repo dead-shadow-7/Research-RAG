@@ -1,0 +1,52 @@
+# Single-container stack for a 1 GB host (AWS free tier t2/t3.micro).
+#
+#   docker compose -f docker-compose.free.yml up -d --build
+#
+# Differences from docker-compose.prod.yml:
+#   * no worker  -- ingestion runs inside the API process (INLINE_INGESTION)
+#   * no redis   -- nothing left to queue
+#
+# That is the difference between ~1.2 GB and ~460 MB resident: the worker was a second
+# process holding its own copy of the embedding model. The trade is that a large upload
+# competes with request handling, and ingestion runs one document at a time.
+#
+# Once you outgrow it, docker-compose.prod.yml is the same app with the worker restored.
+
+services:
+  api:
+    build: ./api
+    image: rag-api
+    restart: unless-stopped
+    env_file: .env.production
+    environment:
+      # Set here rather than in .env.production so this file is self-describing: the
+      # whole point of this stack is that there is no worker to hand jobs to.
+      INLINE_INGESTION: "true"
+      # Keep the allocator and ONNX from spreading across threads on a 1 vCPU box.
+      OMP_NUM_THREADS: "1"
+      MALLOC_ARENA_MAX: "2"
+    volumes:
+      - storage:/app/storage
+    expose:
+      - "8000"
+    # A 1 GB host has no room for a runaway container to take the OS with it.
+    mem_limit: 768m
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80" # required for the ACME challenge, not just redirects
+      - "443:443"
+    env_file: .env.production # Caddy reads only API_DOMAIN
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddydata:/data # issued certificates -- losing this re-requests them
+      - caddyconfig:/config
+    depends_on:
+      - api
+
+volumes:
+  storage:
+  caddydata:
+  caddyconfig:

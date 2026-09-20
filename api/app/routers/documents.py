@@ -4,8 +4,7 @@ import hashlib
 import uuid
 from pathlib import Path
 
-from arq.connections import ArqRedis
-from fastapi import APIRouter, Depends, HTTPException, Response, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Response, UploadFile, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -13,8 +12,8 @@ from app.config import settings
 from app.db import get_session
 from app.ingestion.parsers import UnsupportedSource, detect_source_type
 from app.ingestion.pipeline import delete_document_data
+from app.ingestion.scheduler import schedule_ingestion
 from app.models import DocStatus, Document, IngestJob, SourceType
-from app.queue import get_pool
 from app.schemas import DocumentOut, UrlIngestRequest
 
 router = APIRouter(prefix="/api/documents", tags=["documents"])
@@ -62,8 +61,8 @@ def _to_out(doc: Document, job: IngestJob | None) -> DocumentOut:
 async def upload_document(
     file: UploadFile,
     response: Response,
+    background: BackgroundTasks,
     session: AsyncSession = Depends(get_session),
-    pool: ArqRedis = Depends(get_pool),
 ) -> DocumentOut:
     """Accept a file, persist it, and queue ingestion. Never blocks on parsing."""
     if not file.filename:
@@ -115,7 +114,7 @@ async def upload_document(
     await session.commit()
     await session.refresh(doc)
 
-    await pool.enqueue_job("ingest_document", str(doc_id))
+    await schedule_ingestion(doc_id, background)
     return _to_out(doc, None)
 
 
@@ -123,8 +122,8 @@ async def upload_document(
 async def ingest_url(
     payload: UrlIngestRequest,
     response: Response,
+    background: BackgroundTasks,
     session: AsyncSession = Depends(get_session),
-    pool: ArqRedis = Depends(get_pool),
 ) -> DocumentOut:
     """JSON sibling of the upload endpoint, for web pages.
 
@@ -154,7 +153,7 @@ async def ingest_url(
     await session.commit()
     await session.refresh(doc)
 
-    await pool.enqueue_job("ingest_document", str(doc.id))
+    await schedule_ingestion(doc.id, background)
     return _to_out(doc, None)
 
 

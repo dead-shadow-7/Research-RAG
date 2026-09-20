@@ -44,6 +44,15 @@ class Settings(BaseSettings):
     embedding_model: str = "BAAI/bge-base-en-v1.5"
     embedding_dim: int = 768
     model_cache_dir: Path = API_DIR / "storage" / "models"
+    # Load the ONNX model without re-optimising it or arena-allocating. Saves ~167 MB
+    # and leaves embeddings unchanged; turn off only to isolate a FastEmbed problem.
+    lean_onnx: bool = True
+    onnx_threads: int = 1
+
+    # Run ingestion inside this process instead of a separate arq worker. Halves memory
+    # by keeping one copy of the model and removes the need for Redis, at the cost of
+    # ingestion competing with request handling. Intended for small single-box hosts.
+    inline_ingestion: bool = False
 
     # chunking / retrieval
     chunk_tokens: int = 380
