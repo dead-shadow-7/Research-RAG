@@ -78,11 +78,61 @@ Everything is read from `.env` through `app/config.py`. The settings worth knowi
 | `LLM_MAX_TOKENS` | `2000` | With reasoning on, thinking spends this budget before any answer is written. |
 | `LLM_TEMPERATURE` | `0.2` | |
 | `RETRIEVE_K` | `20` | Candidates fetched from Pinecone. |
-| `CONTEXT_K` | `6` | Chunks actually put in front of the model. Drives prompt cost. |
-| `RERANK_ENABLED` | `false` | Turns on a local cross-encoder over the candidates. |
+| `CONTEXT_K` | `6` | **Ceiling**, not a quota — see below. |
+| `CONTEXT_MIN_RATIO` | `0.75` | A chunk must score within this fraction of the best match. |
+| `CONTEXT_MIN_SCORE` | `0.50` | Absolute floor. Below it, the answer isn't in the corpus. |
+| `RERANK_ENABLED` | `false` | Local cross-encoder over the candidates. Off by default — see below. |
 | `CHUNK_TOKENS` / `CHUNK_OVERLAP` | `380` / `64` | Measured in BGE tokens, not characters. |
 | `EMBEDDING_MODEL` / `EMBEDDING_DIM` | `BAAI/bge-base-en-v1.5` / `768` | Must agree with the Pinecone index. |
 | `MAX_UPLOAD_MB` | `50` | Enforced while streaming to disk. |
+
+### Why `CONTEXT_K` is a ceiling
+
+Vector search always returns its top k, however weak the matches are. Filling a fixed
+number of context slots therefore means shipping whatever ranked highest — measured on a
+mixed corpus, a warranty question returned one correct chunk and five from an unrelated
+dissertation. That pads every prompt, costs money per query, and invites the model to
+answer from material that has nothing to do with the question.
+
+Scores separate cleanly, so a floor fixes it. Measured with `bge-base-en-v1.5`:
+
+| | best chunk's score |
+|---|---|
+| answerable questions | 0.57 – 0.85 |
+| questions the corpus cannot answer | 0.42 – 0.43 |
+
+`CONTEXT_MIN_SCORE=0.50` sits in that gap. Combined with the ratio test, across a
+seven-case eval:
+
+| | chunks sent | precision | unanswerable questions handled |
+|---|---|---|---|
+| raw top-k | 42 | 12% | 0/2 — returned six chunks each |
+| with the floor | 5 | 100% | 2/2 — returned nothing |
+
+End to end that took a real query from 1734 input tokens to 242. Returning nothing is a
+feature: the chat endpoint then says the documents don't cover it, instead of answering
+from the best of a bad set.
+
+**Re-measure if you change the embedding model.** These numbers are properties of
+`bge-base-en-v1.5`, not universal constants:
+
+```bash
+.venv/Scripts/python tests/eval_retrieval.py              # current settings
+.venv/Scripts/python tests/eval_retrieval.py --no-floor   # unfiltered, for comparison
+```
+
+Add cases to `CASES` in that file as you add documents, including ones with
+`expect=None` — questions the corpus *should not* answer are the ones that catch a floor
+set too low.
+
+### Reranking
+
+`RERANK_ENABLED=true` scores the candidates with a local cross-encoder and thresholds on
+`RERANK_MIN_SCORE` (a probability, since raw cross-encoder output is unbounded logits).
+It is off by default because on this corpus it matched the score floor exactly — 100%
+precision either way — while adding an 80 MB model download and per-query CPU. Turn it
+on when questions legitimately need several chunks and the floor starts admitting noise;
+`eval_retrieval.py` will tell you whether it earns its cost.
 
 ### Turning reasoning off
 
@@ -116,8 +166,8 @@ reconcile conflicting sources. If multi-document answers start to look thin, try
 
 | Method | Path | Purpose |
 |---|---|---|
-| `POST` | `/api/documents` | Multipart upload. Returns `202` with the document id. |
-| `POST` | `/api/documents/url` | JSON `{url, title?}`. Separate route because FastAPI cannot take a JSON body and a file on one path. |
+| `POST` | `/api/documents` | Multipart upload. `202` when queued, `200` with the existing document if those exact bytes are already indexed. |
+| `POST` | `/api/documents/url` | JSON `{url, title?}`. Separate route because FastAPI cannot take a JSON body and a file on one path. Same dedupe behaviour, keyed on the URL. |
 | `GET` | `/api/documents` | List with status and indexing progress. |
 | `GET` | `/api/documents/{id}` | One document, with its latest job stage and error. |
 | `DELETE` | `/api/documents/{id}` | Removes vectors, rows and the stored file. |
@@ -173,6 +223,18 @@ tests drive a stubbed stream.
   (`"...[1"` then `"2]..."`), so `stream_answer` holds back a partial tail — including
   the whitespace in front of it, otherwise stripping the marker leaves `"dispatch ."`.
   `tests/test_llm.py` covers the split, grouped (`[1,2]`) and out-of-range cases.
+- **Re-uploading is the retry path.** Identical bytes are deduped against
+  `content_hash` and return the existing document, so the same file cannot be indexed
+  twice. A *failed* document is deliberately excluded from that check — re-uploading it
+  is how you retry one.
+- **A worker restart fails whatever was mid-flight.** Those documents have no job left
+  to finish them, so `fail_stale_documents()` marks them failed on startup rather than
+  leaving a progress bar that never moves. They are not auto-retried: a document that
+  reliably kills the worker would retry on every restart.
+- **A URL that extracts under 200 characters is rejected.** Trafilatura returns whatever
+  it can find, so a nav-only page yields something like `"Home"` — a one-word document
+  that pollutes the index. Login walls and JS-rendered pages fail here too, with a
+  message saying so.
 - **Pinecone's vector count lags.** `describe_index_stats` is eventually consistent, so
   the number in `/api/health` can still show deleted vectors for a while. A query is the
   reliable check — deleted chunks stop matching immediately.

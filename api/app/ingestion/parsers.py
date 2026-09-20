@@ -34,6 +34,10 @@ XLSX_ROWS_PER_BLOCK = 40
 
 USER_AGENT = "Mozilla/5.0 (compatible; RAG-ingest/0.1)"
 
+# Trafilatura returns whatever it can find, so a nav-only page yields something like
+# "Home". Anything this short is not a document, and indexing it just adds noise.
+MIN_URL_CONTENT_CHARS = 200
+
 
 class UnsupportedSource(Exception):
     pass
@@ -109,9 +113,13 @@ def parse_url(url: str) -> list[Document]:
         resp.raise_for_status()
         html = resp.text
 
-    text = trafilatura.extract(html, include_comments=False, include_tables=True) or ""
-    if not text.strip():
-        raise UnsupportedSource(f"No extractable main content found at {url}")
+    text = (trafilatura.extract(html, include_comments=False, include_tables=True) or "").strip()
+    if len(text) < MIN_URL_CONTENT_CHARS:
+        raise UnsupportedSource(
+            f"No substantial article content found at {url} "
+            f"(extracted {len(text)} characters). It may be a nav page, "
+            "a login wall, or rendered entirely in JavaScript."
+        )
     return [Document(page_content=text, metadata={"url": url})]
 
 

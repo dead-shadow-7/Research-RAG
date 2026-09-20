@@ -10,7 +10,7 @@ import logging
 import uuid
 
 from app.embeddings import warm_up
-from app.ingestion.pipeline import run_ingestion
+from app.ingestion.pipeline import fail_stale_documents, run_ingestion
 from app.queue import redis_settings
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -25,6 +25,10 @@ async def ingest_document(ctx: dict, document_id: str) -> int:
 
 
 async def startup(ctx: dict) -> None:
+    # Anything mid-flight when the worker died has no job left to finish it.
+    if stale := await fail_stale_documents():
+        logger.warning("cleared %d document(s) interrupted by a previous restart", stale)
+
     # Downloads/loads the ONNX model now so the first upload isn't mysteriously slow.
     logger.info("warming up embedding model (first run downloads weights)...")
     await asyncio.to_thread(warm_up)

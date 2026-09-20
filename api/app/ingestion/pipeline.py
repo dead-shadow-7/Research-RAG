@@ -166,14 +166,21 @@ async def delete_document_data(document_id: uuid.UUID) -> int:
     return await asyncio.to_thread(store.delete_document, str(document_id))
 
 
-async def list_stale_documents() -> list[uuid.UUID]:
-    """Documents left mid-flight by a worker restart."""
+async def fail_stale_documents() -> int:
+    """Clear documents left mid-flight by a worker crash or restart.
+
+    Their job is gone, so they would otherwise sit at "embedding" forever with a
+    progress bar that never moves. They are marked failed rather than re-queued: a
+    document that reliably kills the worker would otherwise retry on every restart.
+    Re-uploading it is the retry path.
+    """
+    stale = [DocStatus.PARSING, DocStatus.CHUNKING, DocStatus.EMBEDDING]
     async with session_scope() as session:
-        rows = await session.execute(
-            select(Document.id).where(
-                Document.status.in_(
-                    [DocStatus.PARSING, DocStatus.CHUNKING, DocStatus.EMBEDDING]
-                )
-            )
-        )
-        return list(rows.scalars())
+        rows = await session.execute(select(Document).where(Document.status.in_(stale)))
+        documents = list(rows.scalars())
+        for doc in documents:
+            doc.status = DocStatus.FAILED
+            doc.error = "Ingestion was interrupted by a worker restart. Upload it again."
+        if documents:
+            await session.commit()
+        return len(documents)

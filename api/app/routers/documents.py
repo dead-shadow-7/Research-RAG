@@ -5,7 +5,7 @@ import uuid
 from pathlib import Path
 
 from arq.connections import ArqRedis
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, HTTPException, Response, UploadFile, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -35,6 +35,19 @@ async def _latest_progress(session: AsyncSession, doc_ids: list[uuid.UUID]) -> d
     return {job.document_id: job for job in rows.scalars()}
 
 
+async def _find_duplicate(session: AsyncSession, content_hash: str) -> Document | None:
+    """An identical upload that is already indexed or on its way.
+
+    A failed document is not a duplicate -- re-uploading is how you retry one.
+    """
+    rows = await session.execute(
+        select(Document)
+        .where(Document.content_hash == content_hash, Document.status != DocStatus.FAILED)
+        .limit(1)
+    )
+    return rows.scalar_one_or_none()
+
+
 def _to_out(doc: Document, job: IngestJob | None) -> DocumentOut:
     out = DocumentOut.model_validate(doc)
     if job is not None:
@@ -48,6 +61,7 @@ def _to_out(doc: Document, job: IngestJob | None) -> DocumentOut:
 @router.post("", status_code=status.HTTP_202_ACCEPTED, response_model=DocumentOut)
 async def upload_document(
     file: UploadFile,
+    response: Response,
     session: AsyncSession = Depends(get_session),
     pool: ArqRedis = Depends(get_pool),
 ) -> DocumentOut:
@@ -79,13 +93,22 @@ async def upload_document(
         dest.unlink(missing_ok=True)
         raise
 
+    # Re-uploading the same bytes would otherwise duplicate every vector in Pinecone,
+    # which costs storage and lets one document answer twice.
+    content_hash = hasher.hexdigest()
+    if (existing := await _find_duplicate(session, content_hash)) is not None:
+        dest.unlink(missing_ok=True)
+        response.status_code = status.HTTP_200_OK
+        jobs = await _latest_progress(session, [existing.id])
+        return _to_out(existing, jobs.get(existing.id))
+
     doc = Document(
         id=doc_id,
         title=file.filename,
         source_type=source_type.value,
         source_uri=str(dest),
         byte_size=size,
-        content_hash=hasher.hexdigest(),
+        content_hash=content_hash,
         status=DocStatus.QUEUED,
     )
     session.add(doc)
@@ -99,6 +122,7 @@ async def upload_document(
 @router.post("/url", status_code=status.HTTP_202_ACCEPTED, response_model=DocumentOut)
 async def ingest_url(
     payload: UrlIngestRequest,
+    response: Response,
     session: AsyncSession = Depends(get_session),
     pool: ArqRedis = Depends(get_pool),
 ) -> DocumentOut:
@@ -106,15 +130,24 @@ async def ingest_url(
 
     Split from `POST /api/documents` because FastAPI cannot accept a JSON body and a
     multipart file on the same route.
+
+    Adding a URL that is already indexed returns the existing document rather than a
+    second copy. To re-fetch a page whose content has changed, delete it first.
     """
     url = str(payload.url)
+    content_hash = hashlib.sha256(url.encode()).hexdigest()
+    if (existing := await _find_duplicate(session, content_hash)) is not None:
+        response.status_code = status.HTTP_200_OK
+        jobs = await _latest_progress(session, [existing.id])
+        return _to_out(existing, jobs.get(existing.id))
+
     doc = Document(
         id=uuid.uuid4(),
         title=payload.title or url,
         source_type=SourceType.URL.value,
         source_uri=url,
         byte_size=0,
-        content_hash=hashlib.sha256(url.encode()).hexdigest(),
+        content_hash=content_hash,
         status=DocStatus.QUEUED,
     )
     session.add(doc)

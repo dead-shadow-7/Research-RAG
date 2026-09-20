@@ -50,8 +50,19 @@ class Settings(BaseSettings):
     chunk_overlap: int = 64
     retrieve_k: int = 20
     context_k: int = 6
+    # context_k is a ceiling, not a quota. A chunk only reaches the model if it scores
+    # within `context_min_ratio` of the best match and clears `context_min_score`;
+    # otherwise a question with one good answer drags five irrelevant chunks along.
+    context_min_ratio: float = 0.75
+    # Calibrated on this corpus with bge-base-en-v1.5: answerable questions scored
+    # 0.57-0.85 on their best chunk, unanswerable ones topped out at 0.43. Re-measure
+    # with tests/eval_retrieval.py if the embedding model changes -- this number is a
+    # property of the model, not a universal constant.
+    context_min_score: float = 0.50
     rerank_enabled: bool = False
     rerank_model: str = "Xenova/ms-marco-MiniLM-L-6-v2"
+    # Cross-encoder scores are logits, squashed to a 0-1 relevance probability.
+    rerank_min_score: float = 0.5
 
     # storage / app
     upload_dir: Path = API_DIR / "storage" / "uploads"
