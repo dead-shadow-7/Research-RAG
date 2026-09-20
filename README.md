@@ -21,6 +21,9 @@ React (Vite :5173) ──HTTP/SSE──▶ FastAPI (:8000) ──▶ Postgres  (
 Ingestion never runs in the request path: uploading returns `202` immediately and an arq
 worker does the parsing, chunking and embedding while the UI polls for progress.
 
+Deploying it: **[DEPLOYMENT.md](DEPLOYMENT.md)** — Vercel, AWS, Supabase and Pinecone,
+including the three code changes the app needs before it will run outside a dev proxy.
+
 ## Prerequisites
 
 Python 3.14, Node 22, Docker Desktop, a Pinecone API key, and credentials for an
