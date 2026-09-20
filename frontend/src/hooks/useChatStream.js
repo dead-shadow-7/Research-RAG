@@ -5,17 +5,21 @@ import { streamChat } from '../api/client'
 let counter = 0
 const nextId = () => `m${++counter}`
 
-const answerText = (msg) => msg.segments.map((s) => s.text).join('')
+// Citations live inside the markdown as links, so they survive block structure: a
+// marker can sit mid-sentence, inside a list item or inside a table cell, and the
+// markdown parser still sees one continuous document. Rendering each citation-delimited
+// fragment separately would break every paragraph it interrupted.
+const citeLink = (n) => `[${n}](#cite-${n})`
+const CITE_LINK = /\[(\d+)\]\(#cite-\d+\)/g
+
+const plainText = (msg) => (msg.markdown || '').replace(CITE_LINK, '')
 
 function newAnswer() {
   return {
     id: nextId(),
     role: 'assistant',
-    // Text arrives in blocks; a block that carries citations closes its segment, so
-    // markers land exactly where the model attributed the claim.
-    segments: [{ text: '', citations: [] }],
-    // Unique cited sources in first-appearance order -- this is the margin, and the
-    // position in this list is the marker number.
+    markdown: '',
+    // Unique cited sources in first-appearance order; position here is the marker number.
     marks: [],
     sources: [],
     status: 'streaming',
@@ -29,16 +33,8 @@ function applyEvent(msg, event, data) {
     case 'sources':
       return { ...msg, sources: data }
 
-    case 'token': {
-      const segments = [...msg.segments]
-      const last = segments[segments.length - 1]
-      if (last.citations.length > 0) {
-        segments.push({ text: data.text, citations: [] })
-      } else {
-        segments[segments.length - 1] = { ...last, text: last.text + data.text }
-      }
-      return { ...msg, segments }
-    }
+    case 'token':
+      return { ...msg, markdown: msg.markdown + data.text }
 
     case 'citation': {
       const marks = [...msg.marks]
@@ -47,14 +43,7 @@ function applyEvent(msg, event, data) {
         marks.push(data)
         index = marks.length - 1
       }
-      const number = index + 1
-
-      const segments = [...msg.segments]
-      const last = segments[segments.length - 1]
-      if (!last.citations.includes(number)) {
-        segments[segments.length - 1] = { ...last, citations: [...last.citations, number] }
-      }
-      return { ...msg, marks, segments }
+      return { ...msg, marks, markdown: msg.markdown + citeLink(index + 1) }
     }
 
     case 'done':
@@ -87,16 +76,13 @@ export function useChatStream() {
         .filter((m) => m.status !== 'error')
         .map((m) => ({
           role: m.role,
-          content: m.role === 'user' ? m.text : answerText(m),
+          // The model gets its own words back without citation syntax it never wrote.
+          content: m.role === 'user' ? m.text : plainText(m),
         }))
         .filter((t) => t.content)
 
       const answer = newAnswer()
-      setMessages((prev) => [
-        ...prev,
-        { id: nextId(), role: 'user', text: query },
-        answer,
-      ])
+      setMessages((prev) => [...prev, { id: nextId(), role: 'user', text: query }, answer])
 
       const controller = new AbortController()
       abortRef.current = controller

@@ -1,17 +1,21 @@
 @import 'tailwindcss';
 
 @theme {
-  /* Cool paper rather than warm cream: this is a working index, not a manuscript. */
-  --color-paper: #f1f3f2;
-  --color-panel: #fbfcfb;
-  --color-ink: #15181a;
-  --color-ink-soft: #59626a;
-  --color-ink-faint: #8d959b;
-  --color-rule: #dce1df;
-  --color-signal: #245b4c;
-  --color-signal-soft: #e4ede9;
-  --color-alert: #8c2f39;
-  --color-alert-soft: #f6e8e9;
+  /* Near-black in layers rather than one flat grey. Depth comes from three close
+     values plus a low-contrast hairline, not from shadows: the canvas recedes, panels
+     sit above it, and inputs are inset below. Chroma is kept very low so the jade
+     accent is the only saturated thing on screen. */
+  --color-paper: #09090b; /* canvas */
+  --color-panel: #101113; /* sidebar, composer, drawer */
+  --color-raised: #16181a; /* inputs, code, wells */
+  --color-rule: #212426; /* hairlines */
+  --color-ink: #edefee;
+  --color-ink-soft: #a1a8a6;
+  --color-ink-faint: #6b7472;
+  --color-signal: #5fd0a6; /* jade */
+  --color-signal-soft: #102420;
+  --color-alert: #ee7a84;
+  --color-alert-soft: #241416;
 
   /* Answers are set in a serif: the output is a document to read, not a chat message. */
   --font-display: 'Newsreader', Georgia, serif;
@@ -32,12 +36,237 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
+::selection {
+  background: var(--color-signal-soft);
+  color: var(--color-ink);
+}
+
+/* A single-pixel catch of light along the top of raised surfaces. This is what keeps
+   a near-black panel from reading as a flat cutout; it replaces a drop shadow, which
+   does nothing on a dark canvas. */
+.edge-lit {
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+/* The native checkbox renders as a bright white square, which is the one element loud
+   enough to break a near-black palette. This is the same control, restyled. */
+.check {
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border: 1px solid var(--color-rule);
+  border-radius: 3px;
+  background: var(--color-raised);
+  display: inline-grid;
+  place-content: center;
+  transition:
+    border-color 120ms ease,
+    background-color 120ms ease;
+}
+
+.check:hover:not(:disabled) {
+  border-color: var(--color-ink-faint);
+}
+
+.check:checked {
+  background: var(--color-signal);
+  border-color: var(--color-signal);
+}
+
+.check:checked::after {
+  content: '';
+  width: 7px;
+  height: 4px;
+  border-left: 1.5px solid var(--color-paper);
+  border-bottom: 1.5px solid var(--color-paper);
+  transform: rotate(-45deg) translateY(-1px);
+}
+
+.check:disabled {
+  opacity: 0.3;
+}
+
 /* One shared focus treatment, so keyboard users get the same affordance everywhere. */
 :where(button, a, input, textarea, [tabindex]):focus-visible {
   outline: 2px solid var(--color-signal);
   outline-offset: 2px;
   border-radius: 2px;
 }
+
+/* Tailwind v4's preflight drops the pointer cursor from buttons, so every control in
+   the app would show a plain arrow. Set it once here instead of per component. */
+:where(button, [role='button'], summary, label[for], input[type='checkbox'], input[type='file']):not(
+    :disabled
+  ) {
+  cursor: pointer;
+}
+
+:where(button, input, textarea, select):disabled {
+  cursor: not-allowed;
+}
+
+/* ---------------------------------------------------------------------------
+   Answer prose
+
+   The model replies in markdown. Styling it here rather than overriding a dozen
+   react-markdown components keeps the component file about citations, which is
+   the part with actual logic in it.
+   --------------------------------------------------------------------------- */
+
+.answer-prose {
+  font-family: var(--font-display);
+  font-size: 18px;
+  line-height: 1.7;
+  color: var(--color-ink);
+}
+
+.answer-prose > *:first-child {
+  margin-top: 0;
+}
+
+.answer-prose p {
+  margin: 0 0 1em;
+  /* Better rag, and no single-word last lines. */
+  text-wrap: pretty;
+}
+
+.answer-prose h1,
+.answer-prose h2,
+.answer-prose h3,
+.answer-prose h4 {
+  font-family: var(--font-sans);
+  font-weight: 600;
+  line-height: 1.3;
+  margin: 1.6em 0 0.5em;
+}
+
+.answer-prose h1 {
+  font-size: 21px;
+}
+.answer-prose h2 {
+  font-size: 18px;
+}
+.answer-prose h3,
+.answer-prose h4 {
+  font-size: 15px;
+  color: var(--color-ink-soft);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.answer-prose strong {
+  font-weight: 600;
+  color: #fff;
+}
+
+.answer-prose em {
+  font-style: italic;
+}
+
+.answer-prose ul,
+.answer-prose ol {
+  margin: 0 0 1em;
+  padding-left: 1.4em;
+}
+
+.answer-prose li {
+  margin: 0.3em 0;
+}
+
+.answer-prose ul > li {
+  list-style: none;
+  position: relative;
+}
+
+/* A hairline rather than a filled bullet: quieter next to serif text. */
+.answer-prose ul > li::before {
+  content: '';
+  position: absolute;
+  left: -1em;
+  top: 0.72em;
+  width: 0.5em;
+  height: 1px;
+  background: var(--color-signal);
+  opacity: 0.7;
+}
+
+.answer-prose ol {
+  list-style: decimal;
+}
+
+.answer-prose ol > li::marker {
+  font-family: var(--font-mono);
+  font-size: 0.75em;
+  color: var(--color-ink-faint);
+}
+
+.answer-prose blockquote {
+  margin: 0 0 1em;
+  padding-left: 1em;
+  border-left: 2px solid var(--color-rule);
+  color: var(--color-ink-soft);
+  font-style: italic;
+}
+
+.answer-prose code {
+  font-family: var(--font-mono);
+  font-size: 0.82em;
+  background: var(--color-raised);
+  border: 1px solid var(--color-rule);
+  border-radius: 3px;
+  padding: 0.1em 0.35em;
+}
+
+.answer-prose pre {
+  margin: 0 0 1em;
+  padding: 0.9em 1em;
+  background: var(--color-raised);
+  border: 1px solid var(--color-rule);
+  border-radius: 4px;
+  overflow-x: auto;
+}
+
+.answer-prose pre code {
+  background: none;
+  border: 0;
+  padding: 0;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.answer-prose table {
+  width: 100%;
+  margin: 0 0 1em;
+  border-collapse: collapse;
+  font-family: var(--font-sans);
+  font-size: 13px;
+}
+
+.answer-prose th,
+.answer-prose td {
+  border-bottom: 1px solid var(--color-rule);
+  padding: 0.5em 0.7em;
+  text-align: left;
+  vertical-align: top;
+}
+
+.answer-prose th {
+  font-weight: 600;
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--color-ink-faint);
+}
+
+.answer-prose hr {
+  margin: 1.8em 0;
+  border: 0;
+  border-top: 1px solid var(--color-rule);
+}
+
+/* ---------------------------------------------------------------------------
+   Motion
+   --------------------------------------------------------------------------- */
 
 @keyframes dock-in {
   from {

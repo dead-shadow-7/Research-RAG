@@ -1,5 +1,7 @@
 import { useRef, useState } from 'react'
 
+import { IconSend } from './icons'
+
 export default function Composer({ onAsk, onStop, busy, disabled, hint }) {
   const [value, setValue] = useState('')
   const textarea = useRef(null)
@@ -19,10 +21,10 @@ export default function Composer({ onAsk, onStop, busy, disabled, hint }) {
   }
 
   return (
-    <div className="border-t border-rule bg-panel px-5 py-4 md:px-8">
+    <div className="edge-lit border-t border-rule bg-panel px-5 py-4 md:px-8">
       {/* Aligned with the reading column above it, not centred in the pane. */}
-      <div className="max-w-[62ch]">
-        <div className="flex items-end gap-3 border border-rule bg-paper px-3 py-2 focus-within:border-signal">
+      <div className="max-w-[68ch]">
+        <div className="flex items-end gap-3 rounded border border-rule bg-raised px-3 py-2 transition focus-within:border-signal">
           <textarea
             ref={textarea}
             rows={1}
@@ -40,17 +42,21 @@ export default function Composer({ onAsk, onStop, busy, disabled, hint }) {
           {busy ? (
             <button
               onClick={onStop}
-              className="shrink-0 font-mono text-[10px] tracking-wide text-ink-soft uppercase hover:text-alert"
+              className="mb-0.5 flex size-7 shrink-0 items-center justify-center rounded-sm border border-rule text-ink-soft transition hover:border-alert hover:text-alert"
+              aria-label="Stop generating"
+              title="Stop"
             >
-              Stop
+              <span className="size-2 bg-current" />
             </button>
           ) : (
             <button
               onClick={submit}
               disabled={disabled || !value.trim()}
-              className="shrink-0 font-mono text-[10px] tracking-wide text-signal uppercase transition disabled:text-ink-faint"
+              className="mb-0.5 flex size-7 shrink-0 items-center justify-center rounded-sm border border-signal/40 bg-signal-soft text-signal transition hover:border-signal disabled:border-rule disabled:bg-transparent disabled:text-ink-faint"
+              aria-label="Ask"
+              title="Ask"
             >
-              Ask
+              <IconSend size={15} />
             </button>
           )}
         </div>

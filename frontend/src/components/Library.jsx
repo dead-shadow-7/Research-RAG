@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react'
 
 import { isIndexing, useDocumentMutations, useDocuments } from '../hooks/useDocuments'
+import { IconAlert, IconPlus, IconSpinner, IconTrash, IconUpload, SourceIcon } from './icons'
 
 const ACCEPT = '.pdf,.doc,.docx,.xlsx,.xlsm,.txt,.md,.markdown'
 
@@ -9,17 +10,21 @@ const STATUS_LABEL = {
   parsing: 'parsing',
   chunking: 'chunking',
   embedding: 'embedding',
-  ready: 'ready',
-  failed: 'failed',
 }
 
 function StatusLine({ doc }) {
   if (doc.status === 'failed') {
-    return <span className="text-alert">failed</span>
+    return (
+      <span className="flex items-center gap-1 text-alert">
+        <IconAlert size={11} />
+        failed
+      </span>
+    )
   }
   if (isIndexing(doc)) {
     return (
-      <span className="text-signal">
+      <span className="flex items-center gap-1 text-signal">
+        <IconSpinner size={11} />
         {STATUS_LABEL[doc.status]} · {doc.progress_pct}%
       </span>
     )
@@ -34,7 +39,7 @@ function StatusLine({ doc }) {
 function DocumentRow({ doc, selected, onToggle, onRemove }) {
   const indexing = isIndexing(doc)
   return (
-    <li className="group relative border-b border-rule last:border-b-0">
+    <li className="group relative border-b border-rule last:border-b-0 transition hover:bg-raised">
       <div className="flex items-start gap-3 px-4 py-3">
         <input
           type="checkbox"
@@ -42,8 +47,13 @@ function DocumentRow({ doc, selected, onToggle, onRemove }) {
           onChange={() => onToggle(doc.id)}
           disabled={doc.status !== 'ready'}
           aria-label={`Search within ${doc.title}`}
-          className="mt-1 size-3.5 shrink-0 accent-signal disabled:opacity-30"
+          className="check mt-1 shrink-0"
         />
+        <span
+          className={`mt-0.5 shrink-0 ${doc.status === 'ready' ? 'text-ink-soft' : 'text-ink-faint'}`}
+        >
+          <SourceIcon type={doc.source_type} size={15} />
+        </span>
         <div className="min-w-0 flex-1">
           <p className="truncate text-[13px] leading-snug" title={doc.title}>
             {doc.title}
@@ -65,10 +75,11 @@ function DocumentRow({ doc, selected, onToggle, onRemove }) {
         </div>
         <button
           onClick={() => onRemove(doc.id)}
-          className="shrink-0 font-mono text-[10px] text-ink-faint opacity-0 transition hover:text-alert group-hover:opacity-100 focus-visible:opacity-100"
+          className="shrink-0 text-ink-faint opacity-0 transition hover:text-alert group-hover:opacity-100 focus-visible:opacity-100"
           aria-label={`Remove ${doc.title}`}
+          title="Remove"
         >
-          REMOVE
+          <IconTrash size={15} />
         </button>
       </div>
     </li>
@@ -102,7 +113,7 @@ export default function Library({ selectedIds, onSelectionChange }) {
   const error = upload.error || addUrl.error || remove.error
 
   return (
-    <aside className="flex max-h-[45vh] w-full shrink-0 flex-col border-b border-rule bg-panel md:h-full md:max-h-none md:w-[320px] md:border-r md:border-b-0">
+    <aside className="edge-lit flex max-h-[45vh] w-full shrink-0 flex-col border-b border-rule bg-panel md:h-full md:max-h-none md:w-[320px] md:border-r md:border-b-0">
       <header className="border-b border-rule px-4 py-3">
         <h2 className="font-mono text-[10px] tracking-[0.18em] text-ink-faint uppercase">
           Library
@@ -121,11 +132,14 @@ export default function Library({ selectedIds, onSelectionChange }) {
             setDragging(false)
             addFiles(e.dataTransfer.files)
           }}
-          className={`rounded-sm border border-dashed px-4 py-6 text-center transition ${
-            dragging ? 'border-signal bg-signal-soft' : 'border-rule bg-paper'
+          className={`rounded border border-dashed px-4 py-6 text-center transition ${
+            dragging ? 'border-signal bg-signal-soft' : 'border-rule bg-raised'
           }`}
         >
-          <p className="text-[13px] text-ink-soft">
+          <span className={`inline-flex ${dragging ? 'text-signal' : 'text-ink-faint'}`}>
+            <IconUpload size={18} />
+          </span>
+          <p className="mt-2 text-[13px] text-ink-soft">
             Drop a file, or{' '}
             <button
               onClick={() => fileInput.current?.click()}
@@ -150,19 +164,21 @@ export default function Library({ selectedIds, onSelectionChange }) {
           />
         </div>
 
-        <form onSubmit={submitUrl} className="mt-3 flex flex-wrap gap-2">
+        <form onSubmit={submitUrl} className="mt-3 flex gap-2">
           <input
             type="url"
             value={url}
             onChange={(e) => setUrl(e.target.value)}
             placeholder="https://example.com/article"
-            className="min-w-0 flex-1 border border-rule bg-paper px-2 py-1.5 text-[12px] placeholder:text-ink-faint focus:border-signal focus:outline-none"
+            className="min-w-0 flex-1 rounded-sm border border-rule bg-raised px-2.5 py-1.5 text-[12px] placeholder:text-ink-faint focus:border-signal focus:outline-none"
           />
           <button
             type="submit"
-            className="border border-rule px-2.5 py-1.5 font-mono text-[10px] tracking-wide text-ink-soft uppercase transition hover:border-signal hover:text-signal"
+            aria-label="Add URL"
+            title="Add URL"
+            className="flex shrink-0 items-center justify-center rounded-sm border border-rule px-2 text-ink-soft transition hover:border-signal hover:text-signal"
           >
-            Add
+            <IconPlus size={15} />
           </button>
         </form>
 

@@ -4,9 +4,9 @@ import Answer from './Answer'
 
 function Question({ text }) {
   return (
-    <div className="max-w-[62ch]">
+    <div className="max-w-[68ch] border-l-2 border-signal pl-4">
       <p className="font-mono text-[10px] tracking-[0.18em] text-ink-faint uppercase">Asked</p>
-      <p className="mt-1.5 text-[15px] leading-relaxed text-ink-soft">{text}</p>
+      <p className="mt-1.5 text-[15px] leading-relaxed text-ink">{text}</p>
     </div>
   )
 }
@@ -45,10 +45,12 @@ export default function Conversation({ messages, ready, onOpenSource }) {
 
   return (
     <div className="min-h-0 flex-1 overflow-y-auto px-5 py-8 md:px-8">
-      <div className="space-y-10">
-        {messages.map((message) =>
+      <div className="space-y-8">
+        {messages.map((message, i) =>
           message.role === 'user' ? (
-            <Question key={message.id} text={message.text} />
+            <div key={message.id} className={i > 0 ? 'border-t border-rule pt-8' : undefined}>
+              <Question text={message.text} />
+            </div>
           ) : (
             <Answer key={message.id} message={message} onOpenSource={onOpenSource} />
           ),

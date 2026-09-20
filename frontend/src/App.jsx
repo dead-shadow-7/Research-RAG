@@ -26,7 +26,7 @@ export default function App() {
 
   return (
     <div className="flex h-full flex-col">
-      <header className="flex items-center justify-between border-b border-rule bg-panel px-5 py-2.5">
+      <header className="edge-lit flex items-center justify-between border-b border-rule bg-panel px-5 py-2.5">
         <div className="flex items-baseline gap-3">
           <h1 className="font-display text-[17px] tracking-tight">Marginalia</h1>
           <p className="font-mono text-[10px] tracking-wide text-ink-faint uppercase">

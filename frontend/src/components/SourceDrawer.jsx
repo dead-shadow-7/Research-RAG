@@ -1,5 +1,7 @@
 import { useEffect } from 'react'
 
+import { IconClose, IconQuote } from './icons'
+
 /**
  * The full retrieved passage behind a citation.
  *
@@ -23,12 +25,12 @@ export default function SourceDrawer({ mark, sources, onClose }) {
       <button
         onClick={onClose}
         aria-label="Close source"
-        className="fixed inset-0 z-10 bg-ink/15"
+        className="fixed inset-0 z-10 bg-black/60"
       />
       <div
         role="dialog"
         aria-label="Source passage"
-        className="dock-in fixed top-0 right-0 z-20 flex h-full w-[min(30rem,100vw)] flex-col border-l border-rule bg-panel shadow-xl"
+        className="edge-lit dock-in fixed top-0 right-0 z-20 flex h-full w-[min(30rem,100vw)] flex-col border-l border-rule bg-panel shadow-2xl shadow-black/50"
       >
         <header className="flex items-start justify-between gap-4 border-b border-rule px-5 py-4">
           <div className="min-w-0">
@@ -39,16 +41,19 @@ export default function SourceDrawer({ mark, sources, onClose }) {
           </div>
           <button
             onClick={onClose}
-            className="shrink-0 font-mono text-[10px] tracking-wide text-ink-soft uppercase hover:text-ink"
+            className="shrink-0 rounded-sm border border-rule p-1 text-ink-soft transition hover:border-ink-soft hover:text-ink"
+            aria-label="Close source"
+            title="Close"
           >
-            Close
+            <IconClose size={14} />
           </button>
         </header>
 
         <div className="min-h-0 flex-1 overflow-y-auto px-5 py-5">
           {mark.cited_text && (
             <section>
-              <h4 className="font-mono text-[10px] tracking-[0.18em] text-signal uppercase">
+              <h4 className="flex items-center gap-1.5 font-mono text-[10px] tracking-[0.18em] text-signal uppercase">
+                <IconQuote size={12} />
                 Cited
               </h4>
               <blockquote className="mt-2 border-l-2 border-signal bg-signal-soft px-3 py-2 font-display text-[15px] leading-relaxed">
