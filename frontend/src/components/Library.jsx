@@ -87,7 +87,7 @@ function DocumentRow({ doc, selected, onToggle, onRemove }) {
 }
 
 export default function Library({ selectedIds, onSelectionChange }) {
-  const { data: documents = [], isLoading } = useDocuments()
+  const { data: documents = [], isLoading, isError } = useDocuments()
   const { upload, addUrl, remove } = useDocumentMutations()
   const [dragging, setDragging] = useState(false)
   const [url, setUrl] = useState('')
@@ -190,6 +190,19 @@ export default function Library({ selectedIds, onSelectionChange }) {
           <p className="px-4 py-6 font-mono text-[10px] tracking-wide text-ink-faint uppercase">
             Loading…
           </p>
+        ) : isError ? (
+          // An unreachable API must not look like an empty library -- that reads as
+          // "my documents are gone" when nothing has been lost.
+          <div className="px-4 py-6">
+            <p className="flex items-center gap-1.5 font-mono text-[10px] tracking-wide text-alert uppercase">
+              <IconAlert size={11} />
+              Can't reach the server
+            </p>
+            <p className="mt-2 text-[13px] leading-relaxed text-ink-soft">
+              Your documents are safe. Start the API on port 8000 and this will reload
+              on its own.
+            </p>
+          </div>
         ) : documents.length === 0 ? (
           <p className="px-4 py-6 text-[13px] leading-relaxed text-ink-soft">
             No documents yet. Add one to start asking.

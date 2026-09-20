@@ -9,7 +9,7 @@ import { useChatStream } from './hooks/useChatStream'
 import { useDocuments } from './hooks/useDocuments'
 
 export default function App() {
-  const { data: documents = [] } = useDocuments()
+  const { data: documents = [], isError } = useDocuments()
   const { messages, busy, ask, stop, reset } = useChatStream()
   const [selectedIds, setSelectedIds] = useState([])
   const [openMark, setOpenMark] = useState(null)
@@ -31,7 +31,7 @@ export default function App() {
         <div className="flex items-baseline gap-3">
           <h1 className="font-display text-[17px] tracking-tight">Marginalia</h1>
           <p className="font-mono text-[10px] tracking-wide text-ink-faint uppercase">
-            {readyDocs.length} indexed · {indexedChunks} chunks
+            {isError ? 'offline' : `${readyDocs.length} indexed · ${indexedChunks} chunks`}
           </p>
         </div>
         {messages.length > 0 && (

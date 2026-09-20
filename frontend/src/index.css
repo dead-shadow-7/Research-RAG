@@ -18,10 +18,13 @@
   --color-alert: #ee7a84;
   --color-alert-soft: #241416;
 
-  /* Answers are set in a serif: the output is a document to read, not a chat message. */
+  /* Answers are set in a serif: the output is a document to read, not a chat message.
+     Instrument Sans carries the interface -- a neutral modern grotesque that stays out
+     of the serif's way -- and JetBrains Mono holds up at the 10px uppercase label size
+     used for every eyebrow and status line. */
   --font-display: 'Newsreader', Georgia, serif;
-  --font-sans: 'IBM Plex Sans', system-ui, sans-serif;
-  --font-mono: 'IBM Plex Mono', ui-monospace, monospace;
+  --font-sans: 'Instrument Sans', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, monospace;
 }
 
 html,

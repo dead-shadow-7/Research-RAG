@@ -12,8 +12,12 @@ export function useDocuments() {
   return useQuery({
     queryKey: ['documents'],
     queryFn: listDocuments,
-    // Poll only while something is still being indexed, then fall quiet.
-    refetchInterval: (query) => (query.state.data?.some(isIndexing) ? 2000 : false),
+    // Poll while something is indexing, and keep retrying while the API is
+    // unreachable so the UI recovers by itself once it is back. Quiet otherwise.
+    refetchInterval: (query) => {
+      if (query.state.status === 'error') return 5000
+      return query.state.data?.some(isIndexing) ? 2000 : false
+    },
   })
 }
 
