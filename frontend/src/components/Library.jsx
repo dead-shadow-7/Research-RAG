@@ -2,7 +2,7 @@ import { useRef, useState } from 'react'
 
 import { isIndexing, useDocumentMutations, useDocuments } from '../hooks/useDocuments'
 
-const ACCEPT = '.pdf,.doc,.docx,.xlsx,.xlsm'
+const ACCEPT = '.pdf,.doc,.docx,.xlsx,.xlsm,.txt,.md,.markdown'
 
 const STATUS_LABEL = {
   queued: 'queued',
@@ -135,7 +135,7 @@ export default function Library({ selectedIds, onSelectionChange }) {
             </button>
           </p>
           <p className="mt-1 font-mono text-[10px] tracking-wide text-ink-faint uppercase">
-            PDF · Word · Excel
+            PDF · Word · Excel · Text
           </p>
           <input
             ref={fileInput}

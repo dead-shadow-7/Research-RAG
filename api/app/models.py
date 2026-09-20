@@ -34,6 +34,7 @@ class SourceType(StrEnum):
     PDF = "pdf"
     DOCX = "docx"
     XLSX = "xlsx"
+    TXT = "txt"
     URL = "url"
 
 

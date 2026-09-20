@@ -12,7 +12,7 @@ React (Vite :5173) ──HTTP/SSE──▶ FastAPI (:8000) ──▶ Postgres  (
 
 | Piece | Choice |
 |---|---|
-| Ingestion | PDF (PyMuPDF), Word (docx2txt), Excel (openpyxl), URL (trafilatura) |
+| Ingestion | PDF (PyMuPDF), Word (docx2txt), Excel (openpyxl), plain text / Markdown, URL (trafilatura) |
 | Embeddings | FastEmbed / ONNX, `BAAI/bge-base-en-v1.5`, 768-dim — local, no `torch` |
 | Vector store | Pinecone serverless, cosine |
 | Generation | Any OpenAI-compatible provider via `ChatOpenAI` + `OPENAI_BASE_URL`, streamed |
@@ -231,6 +231,13 @@ tests drive a stubbed stream.
   to finish them, so `fail_stale_documents()` marks them failed on startup rather than
   leaving a progress bar that never moves. They are not auto-retried: a document that
   reliably kills the worker would retry on every restart.
+- **Plain text is decoded by sniffing, not by assumption.** A `.txt` arrives as UTF-8,
+  as UTF-16 (what Notepad calls "Unicode"), or as cp1252. `decode_text` checks the BOM,
+  then detects BOM-less UTF-16 by its interleaved NUL bytes — that check has to run
+  *before* the cp1252 attempt, because every byte is valid cp1252, so UTF-16 would
+  decode "successfully" into NUL-interleaved mojibake and get embedded that way.
+  `.md` and `.markdown` route through the same parser; the splitter already breaks on
+  `"\n## "` headings.
 - **A URL that extracts under 200 characters is rejected.** Trafilatura returns whatever
   it can find, so a nav-only page yields something like `"Home"` — a one-word document
   that pollutes the index. Login walls and JS-rendered pages fail here too, with a

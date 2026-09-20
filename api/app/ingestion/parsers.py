@@ -9,6 +9,7 @@ amounts to a few lines of code here.
 
 from __future__ import annotations
 
+import codecs
 from pathlib import Path
 
 import docx2txt
@@ -26,6 +27,11 @@ EXTENSION_MAP = {
     ".doc": SourceType.DOCX,
     ".xlsx": SourceType.XLSX,
     ".xlsm": SourceType.XLSX,
+    ".txt": SourceType.TXT,
+    # Markdown is plain text, and the splitter already breaks on "\n## " headings,
+    # so it needs no separate parser.
+    ".md": SourceType.TXT,
+    ".markdown": SourceType.TXT,
 }
 
 # Rows per Excel chunk. The header row is repeated in each so a chunk is
@@ -68,6 +74,75 @@ def parse_docx(path: Path) -> list[Document]:
     if not text.strip():
         return []
     # .docx has no page concept until rendered; the splitter will section it.
+    return [Document(page_content=text, metadata={})]
+
+
+_BOMS = (
+    (codecs.BOM_UTF8, "utf-8-sig"),
+    (codecs.BOM_UTF32_LE, "utf-32"),
+    (codecs.BOM_UTF32_BE, "utf-32"),
+    (codecs.BOM_UTF16_LE, "utf-16"),
+    (codecs.BOM_UTF16_BE, "utf-16"),
+)
+
+
+def _looks_utf16(raw: bytes) -> bool:
+    """BOM-less UTF-16 gives itself away by interleaved NUL bytes."""
+    sample = raw[:4096]
+    return bool(sample) and sample.count(0) > len(sample) // 5
+
+
+def _decode_utf16(raw: bytes) -> str | None:
+    """Pick the endianness that yields text rather than CJK noise.
+
+    Both directions decode without error for ASCII-range content -- the wrong one just
+    produces garbage -- so choose by how much of the result lands in ASCII.
+    """
+    best, best_score = None, 0.0
+    for encoding in ("utf-16-le", "utf-16-be"):
+        try:
+            text = raw.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+        if not text:
+            continue
+        score = sum(ord(ch) < 128 for ch in text) / len(text)
+        if score > best_score:
+            best, best_score = text, score
+    return best if best_score > 0.5 else None
+
+
+def decode_text(raw: bytes) -> str:
+    """Decode a plain-text file without knowing its encoding up front.
+
+    A `.txt` can arrive as UTF-8, as UTF-16 (what Windows Notepad calls "Unicode"),
+    or as cp1252 from older editors. Reading with a fixed encoding either raises or,
+    worse, silently produces mojibake that then gets embedded and retrieved.
+    """
+    for bom, encoding in _BOMS:
+        if raw.startswith(bom):
+            return raw.decode(encoding)
+
+    # Must precede the cp1252 attempt: every byte is valid cp1252, so UTF-16 would
+    # "succeed" there and yield NUL-interleaved text.
+    if _looks_utf16(raw) and (text := _decode_utf16(raw)) is not None:
+        return text
+
+    for encoding in ("utf-8", "cp1252"):
+        try:
+            return raw.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+
+    # Last resort: keep what is readable rather than failing the whole document.
+    return raw.decode("utf-8", errors="replace")
+
+
+def parse_txt(path: Path) -> list[Document]:
+    text = decode_text(path.read_bytes())
+    if not text.strip():
+        return []
+    # Plain text has no page structure; the splitter sections it.
     return [Document(page_content=text, metadata={})]
 
 
@@ -131,6 +206,8 @@ def parse(source_type: SourceType, location: str | Path) -> list[Document]:
             return parse_docx(Path(location))
         case SourceType.XLSX:
             return parse_xlsx(Path(location))
+        case SourceType.TXT:
+            return parse_txt(Path(location))
         case SourceType.URL:
             return parse_url(str(location))
     raise UnsupportedSource(f"No parser for {source_type}")
