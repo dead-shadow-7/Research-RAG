@@ -1,0 +1,26 @@
+# Terminates TLS and proxies to the API. Caddy obtains and renews the certificate from
+# Let's Encrypt automatically, which is why the DNS record must resolve before first
+# start and why port 80 has to be open for the ACME challenge.
+#
+# API_DOMAIN comes from .env.production, e.g. API_DOMAIN=api.yourdomain.com
+
+{$API_DOMAIN} {
+	encode gzip
+
+	reverse_proxy api:8000 {
+		# Not optional. Without it Caddy buffers the response and the streamed answer
+		# arrives in one lump at the end, which defeats the SSE endpoint entirely.
+		flush_interval -1
+	}
+
+	# Uploads are capped at MAX_UPLOAD_MB (50 by default) in the application; keep this
+	# above it so the proxy is never the thing that rejects a valid file.
+	request_body {
+		max_size 64MB
+	}
+
+	log {
+		output stdout
+		format console
+	}
+}

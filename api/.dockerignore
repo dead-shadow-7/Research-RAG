@@ -1,0 +1,26 @@
+# Secrets must never reach the build context -- an image layer is not a private place.
+.env
+.env.*
+!.env.example
+
+# The local virtualenv is Windows-built and hundreds of MB; the image builds its own.
+.venv/
+venv/
+
+# Runtime state. storage/models alone is ~300 MB of ONNX weights, and shipping it would
+# bloat every layer for no gain -- the container downloads it once into its volume.
+storage/
+
+# Build and test artefacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+tests/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

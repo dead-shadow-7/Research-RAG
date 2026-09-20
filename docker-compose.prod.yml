@@ -1,0 +1,72 @@
+# Production stack for a single host. See DEPLOYMENT.md.
+#
+#   docker compose -f docker-compose.prod.yml up -d --build
+#
+# The API and the worker are the same image with different commands, and they share one
+# volume because upload writes the file and the worker reads it. Splitting them across
+# hosts breaks ingestion silently -- move uploads to S3 first.
+
+services:
+  api:
+    build: ./api
+    image: rag-api
+    restart: unless-stopped
+    env_file: .env.production
+    volumes:
+      - storage:/app/storage
+    expose:
+      - "8000"
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  worker:
+    build: ./api
+    image: rag-api
+    restart: unless-stopped
+    env_file: .env.production
+    command: python -m arq app.worker.WorkerSettings
+    volumes:
+      - storage:/app/storage # the same files the API wrote
+    # The image's healthcheck probes HTTP, which this process does not serve -- without
+    # this the worker would be permanently "unhealthy" while working perfectly.
+    healthcheck:
+      disable: true
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # Durability is not needed: a lost queue means a document stuck mid-ingest, and the
+    # worker's fail_stale_documents() clears those on the next start.
+    command: redis-server --save "" --appendonly no
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80" # required for the ACME challenge, not just redirects
+      - "443:443"
+    # Caddy reads only API_DOMAIN from this file; it shares the host's trust boundary.
+    env_file: .env.production
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddydata:/data # issued certificates -- losing this re-requests them
+      - caddyconfig:/config
+    depends_on:
+      - api
+
+volumes:
+  storage:
+  redisdata:
+  caddydata:
+  caddyconfig:
