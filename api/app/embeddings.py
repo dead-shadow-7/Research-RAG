@@ -64,7 +64,11 @@ class BGEFastEmbedEmbeddings(Embeddings):
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
         # `embed()` yields numpy arrays lazily; materialise and convert for JSON transport.
-        return [v.tolist() for v in self._model.embed(texts, batch_size=64)]
+        # The batch size is the peak-memory dial -- see settings.embed_batch_size.
+        return [
+            v.tolist()
+            for v in self._model.embed(texts, batch_size=settings.embed_batch_size)
+        ]
 
     def embed_query(self, text: str) -> list[float]:
         return next(iter(self._model.embed([QUERY_PREFIX + text]))).tolist()

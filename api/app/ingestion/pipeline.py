@@ -17,6 +17,7 @@ from datetime import UTC, datetime
 from langchain_core.documents import Document as LCDocument
 from sqlalchemy import delete, select
 
+from app.config import settings
 from app.db import session_scope
 from app.ingestion.chunking import chunk_documents
 from app.ingestion.cleaning import clean_documents
@@ -135,23 +136,38 @@ async def run_ingestion(document_id: uuid.UUID) -> int:
 
         await _progress(document_id, job_id, DocStatus.EMBEDDING, 60)
         store = get_vector_store()
-        ids = [c.metadata["vector_id"] for c in chunks]
         # Keep Pinecone metadata lean: the chunk text is stored under `text`, and the
         # bookkeeping fields below are what retrieval and the UI actually need.
-        payload = [
-            LCDocument(
-                page_content=c.page_content,
-                metadata={
-                    "document_id": c.metadata["document_id"],
-                    "title": c.metadata["title"],
-                    "ordinal": c.metadata["ordinal"],
-                    "page_from": c.metadata.get("page_from"),
-                    "page_to": c.metadata.get("page_to"),
-                },
+        # Embed and upsert in slices. Doing the whole document at once means peak memory
+        # grows with the document, which is what OOM-kills a small host on a long PDF.
+        # Progress is reported per slice so the UI keeps moving on a large file.
+        size = settings.ingest_batch_size
+        for start in range(0, len(chunks), size):
+            batch = chunks[start : start + size]
+            payload = [
+                LCDocument(
+                    page_content=c.page_content,
+                    metadata={
+                        "document_id": c.metadata["document_id"],
+                        "title": c.metadata["title"],
+                        "ordinal": c.metadata["ordinal"],
+                        "page_from": c.metadata.get("page_from"),
+                        "page_to": c.metadata.get("page_to"),
+                    },
+                )
+                for c in batch
+            ]
+            await asyncio.to_thread(
+                store.add_documents, payload, ids=[c.metadata["vector_id"] for c in batch]
             )
-            for c in chunks
-        ]
-        await asyncio.to_thread(store.add_documents, payload, ids=ids)
+            done = min(start + size, len(chunks))
+            await _progress(
+                document_id,
+                job_id,
+                DocStatus.EMBEDDING,
+                60 + int(35 * done / len(chunks)),
+                f"embedded {done}/{len(chunks)} chunks",
+            )
 
         await _persist(document_id, job_id, chunks)
         return len(chunks)

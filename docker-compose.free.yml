@@ -25,6 +25,11 @@ services:
       # Keep the allocator and ONNX from spreading across threads on a 1 vCPU box.
       OMP_NUM_THREADS: "1"
       MALLOC_ARENA_MAX: "2"
+      # Peak memory during ingestion, not steady state, is what kills a 1 GB host:
+      # a long PDF at the default batch size allocates hundreds of MB of activations
+      # in one go and gets OOM-killed mid-embed.
+      EMBED_BATCH_SIZE: "4"
+      INGEST_BATCH_SIZE: "16"
     volumes:
       - storage:/app/storage
     expose:

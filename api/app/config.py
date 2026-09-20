@@ -48,6 +48,14 @@ class Settings(BaseSettings):
     # and leaves embeddings unchanged; turn off only to isolate a FastEmbed problem.
     lean_onnx: bool = True
     onnx_threads: int = 1
+    # Sequences per ONNX forward pass. This is the peak-memory dial: each sequence
+    # carries 512x3072 of intermediate activations, so 64 costs hundreds of MB in one
+    # allocation and will OOM a small host mid-ingest. Throughput barely moves on one
+    # vCPU, so keep it small.
+    embed_batch_size: int = 8
+    # Chunks embedded and upserted per slice. Bounds ingestion memory by document size
+    # rather than letting a 200-chunk PDF hold every vector at once.
+    ingest_batch_size: int = 32
 
     # Run ingestion inside this process instead of a separate arq worker. Halves memory
     # by keeping one copy of the model and removes the need for Redis, at the cost of
