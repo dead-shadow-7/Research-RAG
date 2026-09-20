@@ -4,7 +4,7 @@ import Answer from './Answer'
 
 function Question({ text }) {
   return (
-    <div className="max-w-[68ch] border-l-2 border-signal pl-4">
+    <div className="max-w-[var(--w-reading)] border-l-2 border-signal pl-4">
       <p className="font-mono text-[10px] tracking-[0.18em] text-ink-faint uppercase">Asked</p>
       <p className="mt-1.5 text-[15px] leading-relaxed text-ink">{text}</p>
     </div>
@@ -37,15 +37,17 @@ export default function Conversation({ messages, ready, onOpenSource }) {
 
   if (messages.length === 0) {
     return (
-      <div className="min-h-0 flex-1 overflow-y-auto px-5 py-8 md:px-8 md:py-10">
-        <EmptyState ready={ready} />
+      <div className="relative min-h-0 flex-1 overflow-y-auto px-5 py-8 md:px-8 md:py-10">
+        <div className="mx-auto w-full max-w-[var(--w-thread)]">
+          <EmptyState ready={ready} />
+        </div>
       </div>
     )
   }
 
   return (
-    <div className="min-h-0 flex-1 overflow-y-auto px-5 py-8 md:px-8">
-      <div className="space-y-8">
+    <div className="relative min-h-0 flex-1 overflow-y-auto px-5 py-8 md:px-8">
+      <div className="mx-auto w-full max-w-[var(--w-thread)] space-y-8">
         {messages.map((message, i) =>
           message.role === 'user' ? (
             <div key={message.id} className={i > 0 ? 'border-t border-rule pt-8' : undefined}>

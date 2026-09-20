@@ -4,6 +4,7 @@ import Composer from './components/Composer'
 import Conversation from './components/Conversation'
 import Library from './components/Library'
 import SourceDrawer from './components/SourceDrawer'
+import StarField from './components/StarField'
 import { useChatStream } from './hooks/useChatStream'
 import { useDocuments } from './hooks/useDocuments'
 
@@ -46,7 +47,10 @@ export default function App() {
       <div className="flex min-h-0 flex-1 flex-col md:flex-row">
         <Library selectedIds={selectedIds} onSelectionChange={setSelectedIds} />
 
-        <main className="flex min-w-0 flex-1 flex-col">
+        {/* The star field is a backdrop: it sits behind the thread, and the composer's
+            own panel covers it at the bottom. */}
+        <main className="relative flex min-w-0 flex-1 flex-col bg-void">
+          <StarField />
           <Conversation messages={messages} ready={ready} onOpenSource={setOpenMark} />
           <Composer
             onAsk={(q) => ask(q, selectedIds.length ? selectedIds : null)}

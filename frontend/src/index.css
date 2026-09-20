@@ -5,6 +5,7 @@
      values plus a low-contrast hairline, not from shadows: the canvas recedes, panels
      sit above it, and inputs are inset below. Chroma is kept very low so the jade
      accent is the only saturated thing on screen. */
+  --color-void: #000000; /* the chat pane, where the star field sits */
   --color-paper: #09090b; /* canvas */
   --color-panel: #101113; /* sidebar, composer, drawer */
   --color-raised: #16181a; /* inputs, code, wells */
@@ -27,6 +28,17 @@ html,
 body,
 #root {
   height: 100%;
+}
+
+/* Thread geometry, shared by the answer grid, the question block and the composer.
+   These were previously expressed in `ch`, which resolves against each element's own
+   font -- so the 18px serif column and the 14px sans composer claimed "68ch" and got
+   two different widths. Fixed units keep them genuinely aligned. */
+:root {
+  --w-reading: 39rem; /* the answer text column */
+  --w-margin: 15rem; /* the sources rail beside it */
+  --w-gap: 2.5rem;
+  --w-thread: calc(var(--w-reading) + var(--w-gap) + var(--w-margin));
 }
 
 body {

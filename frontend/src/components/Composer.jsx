@@ -21,9 +21,9 @@ export default function Composer({ onAsk, onStop, busy, disabled, hint }) {
   }
 
   return (
-    <div className="edge-lit border-t border-rule bg-panel px-5 py-4 md:px-8">
-      {/* Aligned with the reading column above it, not centred in the pane. */}
-      <div className="max-w-[68ch]">
+    <div className="edge-lit relative border-t border-rule bg-panel px-5 py-4 md:px-8">
+      {/* Exactly the width of the thread above it, so the two share an edge. */}
+      <div className="mx-auto w-full max-w-[var(--w-thread)]">
         <div className="flex items-end gap-3 rounded border border-rule bg-raised px-3 py-2 transition focus-within:border-signal">
           <textarea
             ref={textarea}

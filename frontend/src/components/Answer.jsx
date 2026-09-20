@@ -115,7 +115,7 @@ export default function Answer({ message, onOpenSource }) {
   }
 
   return (
-    <div className="grid gap-10 lg:grid-cols-[minmax(0,68ch)_15rem]">
+    <div className="grid gap-[var(--w-gap)] lg:grid-cols-[minmax(0,var(--w-reading))_var(--w-margin)]">
       <div className="answer-prose">
         {message.markdown ? (
           <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
