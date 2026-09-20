@@ -1,0 +1,94 @@
+@import 'tailwindcss';
+
+@theme {
+  /* Cool paper rather than warm cream: this is a working index, not a manuscript. */
+  --color-paper: #f1f3f2;
+  --color-panel: #fbfcfb;
+  --color-ink: #15181a;
+  --color-ink-soft: #59626a;
+  --color-ink-faint: #8d959b;
+  --color-rule: #dce1df;
+  --color-signal: #245b4c;
+  --color-signal-soft: #e4ede9;
+  --color-alert: #8c2f39;
+  --color-alert-soft: #f6e8e9;
+
+  /* Answers are set in a serif: the output is a document to read, not a chat message. */
+  --font-display: 'Newsreader', Georgia, serif;
+  --font-sans: 'IBM Plex Sans', system-ui, sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, monospace;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  background-color: var(--color-paper);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* One shared focus treatment, so keyboard users get the same affordance everywhere. */
+:where(button, a, input, textarea, [tabindex]):focus-visible {
+  outline: 2px solid var(--color-signal);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+@keyframes dock-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.dock-in {
+  animation: dock-in 220ms ease-out both;
+}
+
+/* The streaming caret: the one piece of ambient motion in the interface. */
+@keyframes caret {
+  0%,
+  45% {
+    opacity: 1;
+  }
+  50%,
+  95% {
+    opacity: 0;
+  }
+}
+
+.caret::after {
+  content: '';
+  display: inline-block;
+  width: 0.5ch;
+  height: 1em;
+  margin-left: 0.1em;
+  vertical-align: -0.12em;
+  background-color: var(--color-signal);
+  animation: caret 1.1s steps(1) infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* Thin, quiet scrollbars: the panes scroll a lot and shouldn't shout about it. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-rule) transparent;
+}
