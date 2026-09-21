@@ -57,6 +57,10 @@ function applyEvent(msg, event, data) {
   }
 }
 
+// Keep in step with MAX_HISTORY_TURNS in api/app/schemas.py. The server is the
+// authority; this is so an ordinary long conversation never reaches it.
+const MAX_HISTORY_TURNS = 20
+
 export function useChatStream() {
   const [messages, setMessages] = useState([])
   const [busy, setBusy] = useState(false)
@@ -80,6 +84,10 @@ export function useChatStream() {
           content: m.role === 'user' ? m.text : plainText(m),
         }))
         .filter((t) => t.content)
+        // The API rejects more than MAX_HISTORY_TURNS, because every turn is re-sent
+        // and re-billed on every question. Send the most recent ones rather than
+        // letting a long conversation turn into a 422.
+        .slice(-MAX_HISTORY_TURNS)
 
       const answer = newAnswer()
       setMessages((prev) => [...prev, { id: nextId(), role: 'user', text: query }, answer])

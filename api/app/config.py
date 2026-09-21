@@ -91,10 +91,25 @@ class Settings(BaseSettings):
 
     # storage / app
     upload_dir: Path = API_DIR / "storage" / "uploads"
-    max_upload_mb: int = 50
+    max_upload_mb: int = 8
     # Per-tenant ceiling. Pinecone's free tier is 2 GB across the whole organisation, so
     # an unbounded public sign-up form is a way to lose the index, not a feature.
-    max_documents_per_user: int = 50
+    # 20 x 8 MB also bounds what one account can put on the host's disk.
+    max_documents_per_user: int = 20
+
+    # rate limits -- per authenticated user, counted in this process.
+    #
+    # Sign-up is open and unverified, so without these one account can spend the
+    # provider budget without limit: every question costs an embedding call plus
+    # generation tokens, and nothing else caps queries the way max_documents_per_user
+    # caps ingestion.
+    #
+    # In-process and therefore per-container: a restart clears the counters, and a
+    # second replica would double the effective limit. That is honest for a single-box
+    # deployment; move to Redis before scaling out.
+    chat_per_minute: int = 12
+    chat_per_day: int = 300
+    uploads_per_hour: int = 30
 
     # Kept as a plain string: pydantic-settings tries to JSON-decode list-typed
     # env vars, which makes a bare comma-separated value a validation error.

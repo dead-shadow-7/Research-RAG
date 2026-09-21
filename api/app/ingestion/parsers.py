@@ -10,8 +10,11 @@ amounts to a few lines of code here.
 from __future__ import annotations
 
 import codecs
+import ipaddress
+import socket
 from pathlib import Path
 from statistics import median
+from urllib.parse import urlparse
 
 import docx2txt
 import httpx
@@ -46,6 +49,12 @@ XLSX_MAX_ROWS_PER_BLOCK = 200
 XLSX_BLOCK_MARGIN_TOKENS = 32
 
 USER_AGENT = "Mozilla/5.0 (compatible; RAG-ingest/0.1)"
+
+# The server makes this request, so the scheme and destination are a security
+# boundary, not a convenience. See assert_fetchable.
+ALLOWED_URL_SCHEMES = {"http", "https"}
+MAX_URL_REDIRECTS = 4
+MAX_URL_BYTES = 8 * 1024 * 1024
 
 # Trafilatura returns whatever it can find, so a nav-only page yields something like
 # "Home". Anything this short is not a document, and indexing it just adds noise.
@@ -220,12 +229,81 @@ def parse_xlsx(path: Path) -> list[Document]:
     return docs
 
 
-def parse_url(url: str) -> list[Document]:
-    with httpx.Client(follow_redirects=True, timeout=30.0) as client:
-        resp = client.get(url, headers={"User-Agent": USER_AGENT})
-        resp.raise_for_status()
-        html = resp.text
+def assert_fetchable(url: str) -> None:
+    """Refuse URLs that would make this server talk to itself or its own network.
 
+    Ingesting a URL means the *server* makes the request, so without this any signed-up
+    user can aim it at addresses only the server can reach -- the cloud metadata
+    endpoint on 169.254.169.254, other services in the VPC, localhost -- and read the
+    response back as a document. That is server-side request forgery, and open sign-up
+    makes it available to anyone.
+
+    Every address the hostname resolves to is checked, not just the first: a name with
+    one public and one private A record would otherwise pass and then connect to
+    whichever the resolver handed back.
+    """
+    parsed = urlparse(url)
+    if parsed.scheme not in ALLOWED_URL_SCHEMES:
+        raise UnsupportedSource(
+            f"Only http and https URLs can be ingested, not '{parsed.scheme or url}'."
+        )
+    host = parsed.hostname
+    if not host:
+        raise UnsupportedSource(f"No hostname in '{url}'.")
+
+    try:
+        resolved = socket.getaddrinfo(host, parsed.port or 0, proto=socket.IPPROTO_TCP)
+    except socket.gaierror as exc:
+        raise UnsupportedSource(f"Could not resolve '{host}'.") from exc
+
+    for info in resolved:
+        address = ipaddress.ip_address(info[4][0])
+        # An IPv4-mapped IPv6 address (::ffff:169.254.169.254) has to be unwrapped
+        # before the private/loopback checks mean anything.
+        mapped = getattr(address, "ipv4_mapped", None)
+        if mapped is not None:
+            address = mapped
+        if not address.is_global or address.is_private:
+            raise UnsupportedSource(
+                f"'{host}' resolves to a private or reserved address. "
+                "Only publicly reachable pages can be ingested."
+            )
+
+
+def _fetch(url: str) -> str:
+    """Fetch a page, validating every hop rather than trusting the redirect chain.
+
+    `follow_redirects=True` would hand the whole chain to httpx, and a public URL is
+    free to redirect to a private one -- so the check has to run again after each hop,
+    which means following them here.
+    """
+    with httpx.Client(follow_redirects=False, timeout=30.0) as client:
+        current = url
+        for _ in range(MAX_URL_REDIRECTS + 1):
+            assert_fetchable(current)
+            with client.stream("GET", current, headers={"User-Agent": USER_AGENT}) as resp:
+                if resp.is_redirect and (location := resp.headers.get("location")):
+                    current = str(httpx.URL(current).join(location))
+                    continue
+                resp.raise_for_status()
+
+                # Read with a ceiling: an endpoint that streams forever would otherwise
+                # fill the container's memory.
+                body = bytearray()
+                for chunk in resp.iter_bytes():
+                    body += chunk
+                    if len(body) > MAX_URL_BYTES:
+                        raise UnsupportedSource(
+                            f"Page at {current} exceeds "
+                            f"{MAX_URL_BYTES // (1024 * 1024)} MB."
+                        )
+                return body.decode(resp.encoding or "utf-8", errors="replace")
+
+    raise UnsupportedSource(f"Too many redirects starting from {url}.")
+
+
+def parse_url(url: str) -> list[Document]:
+    html = _fetch(url)
     text = (trafilatura.extract(html, include_comments=False, include_tables=True) or "").strip()
     if len(text) < MIN_URL_CONTENT_CHARS:
         raise UnsupportedSource(

@@ -9,9 +9,14 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import current_user_id
+from app.ratelimit import limited, uploads_per_hour
 from app.config import settings
 from app.db import get_session
-from app.ingestion.parsers import UnsupportedSource, detect_source_type
+from app.ingestion.parsers import (
+    UnsupportedSource,
+    assert_fetchable,
+    detect_source_type,
+)
 from app.ingestion.pipeline import delete_document_data
 from app.ingestion.scheduler import schedule_ingestion
 from app.models import DocStatus, Document, IngestJob, SourceType
@@ -101,7 +106,7 @@ async def upload_document(
     response: Response,
     background: BackgroundTasks,
     session: AsyncSession = Depends(get_session),
-    user_id: uuid.UUID = Depends(current_user_id),
+    user_id: uuid.UUID = Depends(limited(uploads_per_hour)),
 ) -> DocumentOut:
     """Accept a file, persist it, and queue ingestion. Never blocks on parsing."""
     if not file.filename:
@@ -166,7 +171,7 @@ async def ingest_url(
     response: Response,
     background: BackgroundTasks,
     session: AsyncSession = Depends(get_session),
-    user_id: uuid.UUID = Depends(current_user_id),
+    user_id: uuid.UUID = Depends(limited(uploads_per_hour)),
 ) -> DocumentOut:
     """JSON sibling of the upload endpoint, for web pages.
 
@@ -177,6 +182,14 @@ async def ingest_url(
     second copy. To re-fetch a page whose content has changed, delete it first.
     """
     url = str(payload.url)
+    # Checked here as well as in the parser so the caller gets a 400 straight away
+    # rather than a 202 and a document that fails in the background for no visible
+    # reason. The parser keeps its own check: it is the one that makes the request.
+    try:
+        assert_fetchable(url)
+    except UnsupportedSource as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+
     content_hash = hashlib.sha256(url.encode()).hexdigest()
     if (existing := await _find_duplicate(session, user_id, content_hash)) is not None:
         response.status_code = status.HTTP_200_OK

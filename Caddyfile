@@ -13,10 +13,11 @@
 		flush_interval -1
 	}
 
-	# Uploads are capped at MAX_UPLOAD_MB (50 by default) in the application; keep this
-	# above it so the proxy is never the thing that rejects a valid file.
+	# Uploads are capped at MAX_UPLOAD_MB (8 by default) in the application; keep this
+	# above it so the proxy is never the thing that rejects a valid file, but not so far
+	# above that a huge body is streamed to the app only to be refused there.
 	request_body {
-		max_size 64MB
+		max_size 12MB
 	}
 
 	log {

@@ -28,6 +28,7 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, System
 from langchain_openai import ChatOpenAI
 
 from app.config import settings
+from app.schemas import ChatTurn
 
 SYSTEM_PROMPT = """You are a retrieval-grounded research assistant.
 
@@ -102,16 +103,15 @@ def source_ref(doc: Document, number: int) -> dict[str, Any]:
 
 
 def build_messages(
-    query: str, docs: list[Document], history: list[dict[str, str]] | None = None
+    query: str, docs: list[Document], history: list[ChatTurn] | None = None
 ) -> list[BaseMessage]:
     messages: list[BaseMessage] = [SystemMessage(content=SYSTEM_PROMPT)]
 
     for turn in history or []:
-        role, content = turn.get("role"), turn.get("content", "")
-        if role == "user":
-            messages.append(HumanMessage(content=content))
-        elif role == "assistant":
-            messages.append(AIMessage(content=content))
+        if turn.role == "user":
+            messages.append(HumanMessage(content=turn.content))
+        else:
+            messages.append(AIMessage(content=turn.content))
 
     messages.append(
         HumanMessage(content=f"Sources:\n\n{format_sources(docs)}\n\nQuestion: {query}")
@@ -132,7 +132,7 @@ def _text_of(chunk: Any) -> str:
 
 
 async def stream_answer(
-    query: str, docs: list[Document], history: list[dict[str, str]] | None = None
+    query: str, docs: list[Document], history: list[ChatTurn] | None = None
 ) -> AsyncIterator[dict[str, Any]]:
     """Yield `{"type": "token"|"citation"|"usage", ...}` events.
 

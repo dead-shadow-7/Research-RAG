@@ -30,6 +30,8 @@ export default function Composer({ onAsk, onStop, busy, disabled, hint }) {
             rows={1}
             value={value}
             disabled={disabled}
+            // Matches MAX_MESSAGE_CHARS in api/app/schemas.py; the server still enforces it.
+            maxLength={4000}
             onChange={(e) => {
               setValue(e.target.value)
               e.target.style.height = 'auto'

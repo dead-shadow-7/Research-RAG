@@ -5,6 +5,8 @@ banners and footers never become chunks -- boilerplate that gets embedded is boi
 that gets retrieved. These assert that, without hitting the network.
 """
 
+from contextlib import contextmanager
+
 import httpx
 import pytest
 
@@ -31,13 +33,19 @@ PAGE = """
 
 @pytest.fixture
 def served(monkeypatch):
-    """Serve a canned page instead of reaching the network."""
+    """Serve a canned page instead of reaching the network.
+
+    Patches `stream`, not `get`: the fetcher reads the body in chunks so it can abort
+    past MAX_URL_BYTES, and it follows redirects itself so each hop can be re-checked
+    against the private-address rules.
+    """
 
     def serve(html: str, status: int = 200):
-        def fake_get(self, url, **kwargs):
-            return httpx.Response(status, text=html, request=httpx.Request("GET", url))
+        @contextmanager
+        def fake_stream(self, method, url, **kwargs):
+            yield httpx.Response(status, text=html, request=httpx.Request(method, url))
 
-        monkeypatch.setattr(httpx.Client, "get", fake_get)
+        monkeypatch.setattr(httpx.Client, "stream", fake_stream)
 
     return serve
 

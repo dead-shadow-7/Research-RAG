@@ -126,9 +126,11 @@ Everything is read from `.env` through `app/config.py`. The settings worth knowi
 | `EMBEDDING_MODEL` / `EMBEDDING_DIM` | `baai/bge-base-en-v1.5` / `768` | Must agree with the Pinecone index, which is immutable. |
 | `EMBEDDING_BASE_URL` / `EMBEDDING_API_KEY` | — | Blank means the same provider as `OPENAI_*`. |
 | `EMBED_BATCH_SIZE` | `128` | Texts per embeddings request. Flat from 32 to 128 on this provider. |
-| `MAX_UPLOAD_MB` | `50` | Enforced while streaming to disk. |
+| `MAX_UPLOAD_MB` | `8` | Enforced while streaming to disk; Caddy caps the body at 12 MB so the proxy is never what rejects a valid file. |
+| `CHAT_PER_MINUTE` / `CHAT_PER_DAY` | `12` / `300` | Per-user, in-process. `0` disables. |
+| `UPLOADS_PER_HOUR` | `30` | Per-user, covers both the file and URL routes. |
 | `SUPABASE_URL` | — | Required. The JWKS endpoint used to verify tokens is derived from it. |
-| `MAX_DOCUMENTS_PER_USER` | `50` | Per-tenant ceiling. Pinecone's free tier is 2 GB for the whole org. |
+| `MAX_DOCUMENTS_PER_USER` | `20` | Per-tenant ceiling. Pinecone's free tier is 2 GB for the whole org. |
 | `LANGSMITH_TRACING` / `LANGSMITH_API_KEY` | `false` / — | Both, or neither. `config.py` exports them to the environment, which is where the SDK reads them from. `/api/health` reports whether tracing is live. |
 
 ### Why `CONTEXT_K` is a ceiling
@@ -296,6 +298,36 @@ tests our verification policy — including that an HS256 token signed with the 
 is rejected. `test_tenancy.py` runs against the local Postgres inside a transaction that
 is rolled back afterwards, because the thing worth testing lives in the WHERE clauses and
 a mocked session would only test the mock.
+
+## Limits and abuse
+
+Sign-up is open and email confirmation is off, so an account takes seconds to create.
+Everything below assumes the caller is authenticated but otherwise untrusted.
+
+- **URL ingestion validates its destination.** Ingesting a URL makes the *server* fetch
+  it, so without a check any user can aim it at addresses only the server can reach —
+  the cloud metadata endpoint, other services in the VPC, localhost — and read the reply
+  back as a document. `assert_fetchable` restricts the scheme to http/https and rejects
+  hostnames resolving to private, loopback, link-local or reserved addresses, checking
+  **every** address a name resolves to. Redirects are followed by hand, up to
+  `MAX_URL_REDIRECTS`, because a public URL is free to redirect to a private one and
+  handing the chain to httpx would check only the first hop. The body is read in chunks
+  with a ceiling so a stream that never ends cannot fill the container.
+  `tests/test_url_safety.py` covers these.
+- **Rate limits are per user and in-process** (`app/ratelimit.py`). That is deliberate:
+  the deployed stack is one container with no Redis, so a shared store would add a
+  dependency to solve a problem that cannot arise yet. It does mean counters reset on
+  restart, and two replicas would each allow the full limit — fix that before scaling
+  out, not before.
+- **Quotas.** 20 documents and 8 MB per file per user, which also bounds what one
+  account can put on the host's disk.
+- **Not covered.** Pinecone's Starter plan allows 100 namespaces, so the hundredth user
+  is the last one; sign-up 101 fails at upsert with a Pinecone error. Supabase
+  rate-limits sign-in and sign-up on its side, so credential stuffing is their
+  protection rather than ours.
+
+If you deploy on EC2, also set instance metadata to **IMDSv2 required**. The URL check
+above is the fix; that is the belt to its braces.
 
 ## Retrieval eval
 

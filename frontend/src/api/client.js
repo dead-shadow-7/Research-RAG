@@ -10,7 +10,11 @@ async function expectOk(res) {
   let detail = res.statusText
   try {
     const body = await res.json()
-    detail = body.detail ?? detail
+    // FastAPI returns a string for HTTPException and an array of field errors for a
+    // validation failure; rendering the array directly gives "[object Object]".
+    detail = Array.isArray(body.detail)
+      ? body.detail.map((e) => e.msg ?? String(e)).join('; ')
+      : (body.detail ?? detail)
   } catch {
     // Non-JSON error body; the status text is the best we have.
   }

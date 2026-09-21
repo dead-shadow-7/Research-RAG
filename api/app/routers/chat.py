@@ -9,7 +9,8 @@ from typing import Any
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 
-from app.auth import current_user_id, tenant_namespace
+from app.auth import tenant_namespace
+from app.ratelimit import chat_per_day, chat_per_minute, limited
 from app.llm import stream_answer
 from app.retrieval import retrieve
 from app.schemas import ChatRequest
@@ -31,7 +32,8 @@ def sse(event: str, data: Any) -> str:
 
 async def _events(req: ChatRequest, namespace: str) -> AsyncIterator[str]:
     try:
-        docs = await retrieve(req.query, req.document_ids, namespace=namespace)
+        document_ids = [str(d) for d in req.document_ids] if req.document_ids else None
+        docs = await retrieve(req.query, document_ids, namespace=namespace)
 
         # Sources go out before any token so the UI can render source cards while
         # the model is still thinking.
@@ -73,7 +75,8 @@ async def _events(req: ChatRequest, namespace: str) -> AsyncIterator[str]:
 
 @router.post("/stream")
 async def chat_stream(
-    req: ChatRequest, user_id: uuid.UUID = Depends(current_user_id)
+    req: ChatRequest,
+    user_id: uuid.UUID = Depends(limited(chat_per_minute, chat_per_day)),
 ) -> StreamingResponse:
     # The dependency resolves before the response is constructed, so an unauthenticated
     # caller gets a real 401 rather than a 200 whose body happens to open with an error
