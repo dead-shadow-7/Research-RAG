@@ -1,93 +1,79 @@
-"""Local embeddings via FastEmbed (ONNX), exposed through LangChain's `Embeddings`
-interface so the vector store can consume it.
+"""Embeddings via an OpenAI-compatible `/embeddings` endpoint.
 
-Why not `langchain_community.embeddings.FastEmbedEmbeddings`: its `embed_query()`
-delegates to FastEmbed's `query_embed()`, which for BGE models applies **no prefix** --
-it is just an alias for `embed()`. BGE v1.5 is asymmetric and needs an instruction
-prefix on queries only; without it retrieval quality degrades silently, with no error.
-Keeping our own class puts that prefix in exactly one place.
+The model is `bge-base-en-v1.5`, the same one this project used to run locally through
+FastEmbed/ONNX. Verified identical, not assumed: the API's vector scores **cosine
+0.99999423** against a vector embedded by the local model and stored in
+`tests/fixtures/reference_vector.json`. That is what makes the switch safe -- every vector
+already in Pinecone stays queryable, and the retrieval score floor stays calibrated.
+
+Moving the model out of the process is what makes this backend small: no 46 MB of
+onnxruntime, no 361 MB of downloaded weights, no ~330 MB resident, and none of the
+batch-size tuning that existed only to stop the model OOM-killing a 1 GB host.
+
+The tokenizer stays local -- chunk sizing must be exact, and it is 711 KB.
 """
 
 from __future__ import annotations
 
 from functools import lru_cache
+from pathlib import Path
 
-import onnxruntime as ort
+from langchain_openai import OpenAIEmbeddings
+from tokenizers import Tokenizer
 
 from app.config import settings
 
-
-def _install_lean_onnx_session() -> None:
-    """Halve the model's memory footprint before FastEmbed loads it.
-
-    FastEmbed ships `model_optimized.onnx` and then asks ONNX Runtime to optimise it
-    *again*, which leaves a second copy of the weights resident, and it leaves the CPU
-    memory arena enabled, which pre-allocates and never gives memory back. Measured on
-    bge-base: 494 MB -> 327 MB, with embeddings unchanged (cosine 0.9999998 against the
-    stored reference -- see tests/test_embeddings.py).
-
-    This has to be a patch because `TextEmbedding(extra_session_options=...)` is
-    accepted and then silently discarded. Pin the fastembed version: if an upgrade
-    changes the loading path, the reference-vector test is what catches it.
-    """
-    original = ort.InferenceSession
-
-    def lean_session(path_or_bytes, sess_options=None, providers=None, **kwargs):
-        options = sess_options or ort.SessionOptions()
-        options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
-        options.enable_cpu_mem_arena = False
-        options.enable_mem_pattern = False
-        options.intra_op_num_threads = settings.onnx_threads
-        options.inter_op_num_threads = settings.onnx_threads
-        return original(path_or_bytes, sess_options=options, providers=providers, **kwargs)
-
-    ort.InferenceSession = lean_session
-
-
-if settings.lean_onnx:
-    _install_lean_onnx_session()
-
-# Imported after the patch so FastEmbed builds its session with these options.
-from fastembed import TextEmbedding  # noqa: E402
-from langchain_core.embeddings import Embeddings  # noqa: E402
-from tokenizers import Tokenizer  # noqa: E402
-
 QUERY_PREFIX = "Represent this sentence for searching relevant passages: "
 
+# Vendored rather than fetched from the HF hub: it removes a network call from startup
+# (a container's HF cache is empty on every boot), and the ids differ in case between the
+# two sources -- the provider serves `baai/...` while the hub repo is `BAAI/...`.
+TOKENIZER_PATH = Path(__file__).resolve().parent / "data" / "bge-base-en-v1.5-tokenizer.json"
 
-class BGEFastEmbedEmbeddings(Embeddings):
-    def __init__(self) -> None:
-        self._model = TextEmbedding(
-            model_name=settings.embedding_model,
-            cache_dir=str(settings.model_cache_dir),
-        )
 
-    def embed_documents(self, texts: list[str]) -> list[list[float]]:
-        # `embed()` yields numpy arrays lazily; materialise and convert for JSON transport.
-        # The batch size is the peak-memory dial -- see settings.embed_batch_size.
-        return [
-            v.tolist()
-            for v in self._model.embed(texts, batch_size=settings.embed_batch_size)
-        ]
+class BGEAPIEmbeddings(OpenAIEmbeddings):
+    """BGE v1.5 over an OpenAI-compatible embeddings endpoint.
+
+    Subclassed for one reason: BGE v1.5 is asymmetric and no API applies its query
+    instruction prefix for you -- passages go in bare, queries need the prefix. Putting it
+    here means every caller gets it right for free, which is the same reason the FastEmbed
+    version of this class existed.
+    """
 
     def embed_query(self, text: str) -> list[float]:
-        return next(iter(self._model.embed([QUERY_PREFIX + text]))).tolist()
+        return super().embed_query(QUERY_PREFIX + text)
+
+    async def aembed_query(self, text: str) -> list[float]:
+        return await super().aembed_query(QUERY_PREFIX + text)
 
 
 @lru_cache(maxsize=1)
-def get_embeddings() -> BGEFastEmbedEmbeddings:
-    """Process-wide singleton. Constructing this loads the ONNX model -- never per request."""
-    return BGEFastEmbedEmbeddings()
+def get_embeddings() -> BGEAPIEmbeddings:
+    """Process-wide singleton: it holds an HTTP client with a connection pool."""
+    return BGEAPIEmbeddings(
+        model=settings.embedding_model,
+        base_url=settings.embedding_url,
+        api_key=settings.embedding_key,
+        # Load-bearing. Left on (the default), OpenAIEmbeddings tiktoken-encodes the input
+        # and posts arrays of token ids instead of strings -- which this backend rejects
+        # with a 422, and which would be meaningless to it anyway since tiktoken's vocab is
+        # not BGE's. Our chunker already sizes text in BGE tokens, so the re-chunking this
+        # disables is work we have done properly upstream.
+        check_embedding_ctx_length=False,
+        chunk_size=settings.embed_batch_size,
+        timeout=settings.embed_timeout,
+        max_retries=settings.embed_max_retries,
+    )
 
 
 @lru_cache(maxsize=1)
 def get_tokenizer() -> Tokenizer:
     """The embedding model's own tokenizer, for chunk sizing.
 
-    Uses the `tokenizers` package (already a FastEmbed dependency) rather than
-    `transformers`, which would pull the heavy stack back in.
+    Uses the `tokenizers` package rather than `transformers`, which would pull the whole
+    torch stack in for a WordPiece vocabulary.
     """
-    return Tokenizer.from_pretrained(settings.embedding_model)
+    return Tokenizer.from_file(str(TOKENIZER_PATH))
 
 
 def count_tokens(text: str) -> int:
@@ -95,6 +81,5 @@ def count_tokens(text: str) -> int:
 
 
 def warm_up() -> None:
-    """Force model + tokenizer download/load so the first real request isn't slow."""
-    get_embeddings().embed_query("warm up")
+    """Parse the tokenizer now so the first upload isn't paying for it."""
     count_tokens("warm up")

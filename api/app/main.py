@@ -72,11 +72,24 @@ async def _probe_pinecone() -> str:
     return f"ok ({stats.get('total_vector_count', 0)} vectors)"
 
 
+async def _probe_embeddings() -> str:
+    """Embedding is a remote call now, so it can fail on its own -- and silently, since
+    nothing surfaces until an upload or a query does."""
+    from app.embeddings import get_embeddings
+
+    vector = await get_embeddings().aembed_query("health")
+    return f"ok ({len(vector)} dims)"
+
+
 @app.get("/api/health")
 async def health() -> dict:
     """Per-service status. Never raises -- a failing dependency is reported, not hidden."""
     results: dict[str, str] = {}
-    probes = [("database", _probe_db), ("pinecone", _probe_pinecone)]
+    probes = [
+        ("database", _probe_db),
+        ("embeddings", _probe_embeddings),
+        ("pinecone", _probe_pinecone),
+    ]
     if not settings.inline_ingestion:
         probes.insert(1, ("redis", _probe_redis))
     for name, probe in probes:

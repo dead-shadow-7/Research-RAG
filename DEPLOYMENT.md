@@ -134,12 +134,11 @@ API and worker are separate processes, so the real connection count is roughly d
 
 ### 4.1 Launch the instance
 
-- **t3.small (2 GB)** is the practical floor; **t3.medium (4 GB)** is comfortable. The API
-  and the worker *each* load the ONNX embedding model — measured at 624 MB and 588 MB
-  resident. On a free-tier 1 GB instance this does not fit; see
-  [Running on the AWS free tier](#running-on-the-aws-free-tier) for the configuration
-  that does.
-- Ubuntu 24.04 or 26.04 LTS, 20 GB gp3. The 8 GB default is too small for the image plus the model cache. Docker's apt repo publishes 26.04 (`resolute`), but the distro packages below are fewer steps and fine.
+- **t3.micro (1 GB)** is enough since embedding moved to the provider's API — there is no
+  model in either process. Anything larger is headroom, not a requirement. See
+  [Running on a small or free-tier host](#running-on-a-small-or-free-tier-host) for the two-container
+  configuration that drops Redis as well.
+- Ubuntu 24.04 or 26.04 LTS, 20 GB gp3 is plenty. Docker's apt repo publishes 26.04 (`resolute`), but the distro packages below are fewer steps and fine.
 - Allocate an **Elastic IP** so the address survives a stop/start.
 - Security group: `443` and `80` from anywhere (80 is needed for the ACME challenge),
   `22` from your IP only.
@@ -164,11 +163,14 @@ services, with the worker overriding the command. Verified locally:
 
 | | |
 |---|---|
-| image size | 879 MB |
-| build context | 119 KB (815 MB without `.dockerignore`) |
+| image size | was 879 MB with the local embedding model; **re-measure** — `onnxruntime`, `numpy` and `fastembed` are gone |
+| build context | ~830 KB, almost all of it the vendored tokenizer |
 | runs as | `app`, uid 10001, non-root |
 | `import app.main` | OK |
 | `python -m alembic` | 1.20.0, so migrations run in-image |
+
+There is no longer an `apt` layer: every dependency ships a manylinux wheel, so nothing
+needs compiling and nothing needs linking. `libgomp1` left with `onnxruntime`.
 
 Two details worth knowing before you edit it:
 
@@ -305,200 +307,107 @@ rebuildable, because Postgres holds every chunk's text. A re-index script that r
 `chunks` and re-upserts is the recovery path; the uploaded files in the `storage` volume
 are the only thing with no second copy, so snapshot the EBS volume if they matter.
 
-## Running on the AWS free tier
+## Running on a small or free-tier host
 
-The free-tier instances (`t2.micro` / `t3.micro`) have **1 GB of RAM**. Measured on the
-running app:
+The free-tier instances (`t2.micro` / `t3.micro`) have **1 GB of RAM**, and the app now
+fits in it with room to spare. That was not always true: embedding used to run locally,
+and the API and worker each held their own ~330 MB copy of the model, putting the stack
+at ~1.2 GB before the OS got a byte. Moving embedding to the provider's `/v1/embeddings`
+endpoint removed the model, `onnxruntime`, `numpy`, `huggingface-hub` and the 361 MB
+weight download in one step, and with them every memory dial that existed to keep the
+model in check. On disk that is 488 MB less — a 454 MB virtualenv down to 327 MB, and no
+model cache at all. The only local model artefact left is a 711 KB tokenizer committed to
+the repo, kept because chunk sizing must be exact.
 
-| | resident |
+### The configuration
+
+`docker-compose.free.yml` is API and Caddy only, with `INLINE_INGESTION=true`:
+
+- **No worker.** Ingestion runs in the API process via FastAPI `BackgroundTasks`. The
+  `fail_stale_documents()` call moves from the worker's `on_startup` to the API's
+  lifespan, so jobs interrupted by a restart are still cleared.
+- **No Redis.** With nothing to queue, the dependency goes away entirely.
+- `mem_limit: 512m` as a ceiling, so a runaway cannot take the host's OS with it.
+
+Measured on the current build:
+
+| | |
 |---|---|
-| API (uvicorn) | 624 MB |
-| Worker (arq) | 588 MB |
-| Redis | 5 MB |
-| **Total, before Caddy + Docker + OS** | **~1.2 GB** |
+| after importing the app | 188 MB |
+| after the first embedding call | 202 MB |
+| after embedding 200 chunks in one call | **205 MB** (peak 208 MB) |
 
-So the default layout does **not** fit in 1 GB — it is roughly 50% over before the OS
-gets a byte. The reason is specific and fixable: the API and the worker each load their
-own full copy of the embedding model.
+That last row is the one that matters. Embedding a long document used to be the thing
+that killed a 1 GB host — it peaked near 380 MB at `EMBED_BATCH_SIZE=4` and over 1.2 GB
+at the old default of 64. It now costs about 3 MB, because the vectors come back over
+HTTP instead of being computed in-process, and peak memory no longer scales with how you
+batch. (Figures are a Windows working set; a Linux container is normally lower.)
 
-Measured cost of the model alone, in a bare process:
+Ingestion is network-bound rather than CPU-bound for the same reason, which is why this
+layout costs so much less than it used to: the process waits on HTTP instead of competing
+for the single vCPU. End to end on a 60-page PDF:
 
-| model | dimensions | resident |
-|---|---|---|
-| `BAAI/bge-base-en-v1.5` (current) | 768 | 492 MB |
-| `BAAI/bge-small-en-v1.5` | 384 | 226 MB |
-
-### The configuration that fits
-
-Two changes, and **neither requires changing the embedding model**:
-
-**1. Drop the separate worker.** Run ingestion inside the API process with FastAPI
-`BackgroundTasks` instead of arq. This removes an entire model copy *and* Redis —
-the single biggest saving available. Move the `fail_stale_documents()` call from the
-worker's `on_startup` to the API's lifespan so interrupted jobs are still cleared.
-
-**2. Tune the ONNX session.** FastEmbed loads `model_optimized.onnx` and then asks ONNX
-Runtime to optimise it *again*, which makes it hold a second copy of the weights. It
-also leaves the CPU memory arena on, which pre-allocates and never gives memory back.
-Measured, same model file, through FastEmbed:
-
-| | resident |
+| | |
 |---|---|
-| as FastEmbed loads it | 494 MB |
-| with the session tuned | **327 MB** |
+| parse | 0.11 s (60 pages) |
+| clean + chunk | 0.30 s (60 chunks) |
+| embed | 3.34 s |
+| **total** | **3.75 s** — against roughly six minutes on a t2.micro before |
 
-That is **167 MB saved for free** — same weights, same vectors. Verified: embeddings
-from the tuned session match the default to a cosine similarity of **0.9999998**
-(largest element difference 2.3e-4, ordinary float noise from unfused kernels), so the
-existing Pinecone index and the calibrated `CONTEXT_MIN_SCORE` both stay valid.
-
-```python
-# api/app/embeddings.py -- apply before constructing TextEmbedding
-import onnxruntime as ort
-
-_orig_session = ort.InferenceSession
-
-def _lean_session(path_or_bytes, sess_options=None, providers=None, **kw):
-    so = sess_options or ort.SessionOptions()
-    so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
-    so.enable_cpu_mem_arena = False
-    so.enable_mem_pattern = False
-    so.intra_op_num_threads = 1
-    so.inter_op_num_threads = 1
-    return _orig_session(path_or_bytes, sess_options=so, providers=providers, **kw)
-
-ort.InferenceSession = _lean_session
-```
-
-This patches a third-party library, which deserves care: `TextEmbedding` *accepts* an
-`extra_session_options` argument but **silently discards it**, so the supported route
-does not work. Pin the `fastembed` version, and add a test that embeds a fixed sentence
-and asserts cosine ≈ 1 against a stored vector — so a FastEmbed upgrade that changes the
-loading path fails loudly instead of quietly re-indexing everything.
-
-| configuration | total | keeps index? |
-|---|---|---|
-| default (API + worker, bge-base) | ~1.5 GB — **OOM** | — |
-| API + worker, tuned | ~1.23 GB — still over | — |
-| **single process, tuned, bge-base** | **~780 MB — fits** | **yes** |
-| single process, tuned, bge-small | ~630 MB — roomiest | no, needs re-index |
-
-**So the model swap is optional.** Take it only if ~780 MB feels too tight for comfort;
-it buys another ~150 MB at the cost of a full re-index and re-calibration.
-
-`docker-compose.free.yml` is this configuration: API and Caddy only, `INLINE_INGESTION`
-on, container capped at 768 MB so a runaway cannot take the host down with it.
-
-### Steady state is not the number that matters
-
-Measured on a live t2.micro: the API idles at **247 MB** but peaks near **380 MB** while
-embedding. An earlier version of this guide quoted the idle figure as proof it fits,
-which was measured with a 4-chunk PDF and missed the ingestion peak entirely. The first
-real upload OOM-killed the process twice.
-
-Ingestion peak is governed by two settings, both of which default low for this reason:
-
-- `EMBED_BATCH_SIZE` (4 here) — sequences per ONNX forward pass. Each carries
-  512×3072 of intermediate activations, so the old fixed value of 64 allocated hundreds
-  of megabytes in one block.
-- `INGEST_BATCH_SIZE` (16 here) — chunks embedded and upserted per slice, so peak memory
-  is bounded by the *slice*, not the document. A 500-page PDF now costs what a 5-page
-  one does.
-
-**Do not raise `EMBED_BATCH_SIZE` to go faster.** Measured on one vCPU, 48 chunks:
-
-| batch | throughput | peak RSS |
-|---|---|---|
-| 1 | 1.32 chunks/s | 676 MB |
-| **4** | **1.22 chunks/s** | **753 MB** |
-| 16 | 0.81 chunks/s | 908 MB |
-| 64 | 0.67 chunks/s | 1256 MB |
-
-Bigger batches are slower *and* hungrier. Batching amortises cost across parallel
-hardware; with one vCPU and `intra_op_num_threads=1` there is nothing to amortise
-across, so larger intermediate tensors simply blow the CPU cache. The curve runs the
-same direction on both axes, so there is no tradeoff to tune.
-
-Ingestion is CPU-bound, not batch-bound: a t2.micro manages ~0.17 chunks/s against 1.2
-on an unthrottled core, so a 60-page PDF takes about six minutes and a 200-page one
-around twenty. More cores is the only lever that moves it — on a 2-vCPU host raise
-`ONNX_THREADS`, which needs no rebuild.
-
-Then add swap, which is not optional on a 1 GB box — it converts an OOM-kill into
-slowness:
-
-```bash
-sudo fallocate -l 2G /swapfile && sudo chmod 600 /swapfile
-sudo mkswap /swapfile && sudo swapon /swapfile
-echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
-```
-
-And cap allocator overhead in `.env.production`:
-
-```bash
-OMP_NUM_THREADS=1
-MALLOC_ARENA_MAX=2
-```
+Batching is flat from 32 to 128 texts per request (~3.3 s either way) and starts to cost
+at 256, which is why `EMBED_BATCH_SIZE` defaults to 128.
 
 ### What it costs you
 
-- **Only if you also take the model swap:** a Pinecone index's dimension is immutable,
-  so 384 dimensions needs a *new* index and a full re-ingest (set `EMBEDDING_DIM=384`;
-  startup asserts the two agree). The retrieval threshold must then be re-calibrated —
-  `CONTEXT_MIN_SCORE=0.50` was measured for bge-base. Re-run `tests/eval_retrieval.py`
-  and pick the value that separates answerable from unanswerable questions. Do not carry
-  the old number over. Retrieval quality drops somewhat; the eval tells you by how much
-  instead of leaving you guessing.
-- **`intra_op_num_threads = 1` trades throughput for memory.** Embedding a large
-  document is single-threaded, so ingestion gets slower. On a 1-vCPU instance there was
-  little parallelism to give up.
-- **`t3.micro` is burstable.** Sustained embedding will exhaust CPU credits and throttle
-  to ~10% baseline, so ingesting a large PDF can take far longer than it does locally.
-  Ingestion, not serving, is what will feel slow.
-- **Ingestion now competes with request handling** for one vCPU, so a large upload makes
-  chat sluggish while it runs.
+- **Embedding is now a network dependency.** A provider outage stops ingestion and
+  queries, where before only the LLM call could fail that way. `EMBED_MAX_RETRIES`
+  (default 4) covers transient 429s and 5xxs; past that the document is marked `failed`
+  with the error text and re-uploading is the retry. `GET /api/health` probes the
+  endpoint so you can tell this apart from a bug.
+- **Chunks over 512 tokens now fail loudly.** The local model truncated them silently and
+  the chunk lost its tail; the API returns a 400 and the whole document fails. Chunking
+  already sizes in BGE tokens and `tests/test_chunking.py` asserts the cap, so this is a
+  guard rather than a risk — but do not loosen `CHUNK_TOKENS` past 512.
+- **Per-token cost, though negligible here.** A 60-page PDF is roughly 23k embedding
+  tokens, one time. Queries embed a single sentence each.
+- **Ingestion still competes with request handling** on one vCPU for parsing and
+  chunking, so a very large upload can make chat briefly sluggish.
 
-### Other levers, and why they do not pay
+### If the provider ever stops serving this model
 
-- **Smaller embedding batches** (`batch_size=8`) cut the transient spike during
-  ingestion, not the steady-state footprint. Worth doing on 1 GB, but it is not the fix.
-- **`lazy_load=True`** defers the model until first use. It helps startup, but once a
-  query arrives the memory is resident anyway.
-- **Delegating query embedding to the worker** so only one process holds the model is
-  *worse*: the worker keeps it loaded permanently and the API still needs its own
-  runtime, so two processes beat one at nothing.
-- **Pinecone's hosted embeddings** would remove the model from your box entirely
-  (API drops to roughly 150 MB). It is a different model, so it means a re-index and
-  re-calibration like any model swap, plus a network hop on every query and per-token
-  cost — but if memory is the binding constraint, this is the option that removes the
-  constraint rather than shrinking it.
+The Pinecone index is built from `bge-base-en-v1.5` vectors, and an index's dimension is
+immutable. `tests/test_embeddings.py` holds a reference vector captured from the original
+local model and asserts cosine > 0.99999 against the live endpoint — it scored
+**0.99999423** on the day of the switch. If that test starts failing, the provider has
+changed the weights under you and every vector already stored has quietly stopped
+matching. Postgres holds every chunk's text, so re-indexing from `chunks` is the recovery
+path, and `CONTEXT_MIN_SCORE` must be re-calibrated with `tests/eval_retrieval.py` for
+whatever model replaces it. Do not carry the old number across models.
 
-### Two alternatives worth weighing
+### Other hosts worth weighing
 
-- **`t3.small` (2 GB, ~$15/mo)** runs the architecture as designed — no model swap, no
-  re-index, no re-calibration, worker kept. If the app matters, this is the cheaper
-  option once your time is counted.
-- **Oracle Cloud Always Free** gives 4 ARM cores and 24 GB RAM at no cost, permanently,
-  which runs this comfortably with zero compromises. It needs an `arm64` image build
-  (`--platform linux/arm64`); onnxruntime and every other dependency here ship aarch64
-  wheels.
+- **Oracle Cloud Always Free** — 4 ARM cores and 24 GB RAM, permanently free, always on.
+  Needs an `arm64` image build (`--platform linux/arm64`); every dependency here ships
+  aarch64 wheels, and with onnxruntime gone there is nothing left that might not.
+- **Free PaaS tiers** (Render, Fly, Railway) cap at 512 MB, which this now fits inside
+  comfortably. They sleep when idle, so the first request after a pause is slow.
 
 Check your own account's free-tier terms before planning around them — AWS restructured
-the free tier for newer accounts, and I could not confirm the current EC2 allowance. The
-binding constraint here is RAM, not hours.
+the free tier for newer accounts. The binding constraint used to be RAM; it no longer is.
 
 ## Costs
 
 | | |
 |---|---|
-| EC2 t3.small + 20 GB gp3 + Elastic IP | ~$19/mo |
+| EC2 t3.micro + 20 GB gp3 + Elastic IP | ~$10/mo (or $0 on Oracle Always Free) |
 | Supabase free tier | $0 (pauses after 7 days idle — the paid tier does not) |
 | Pinecone serverless | ~$0 at this volume |
 | Vercel hobby | $0 |
 | Domain | ~$12/yr |
 
-Embeddings run on your own CPU, so they cost nothing per document. The LLM endpoint is
-billed per token by your provider.
+Embeddings are billed per token by your provider alongside the LLM, but at a different
+order of magnitude: a 60-page PDF is ~23k embedding tokens once, and a query embeds one
+sentence. Generation is where the cost is.
 
 ## Troubleshooting
 
@@ -512,10 +421,8 @@ billed per token by your provider.
 | Browser: blocked by CORS | The Vercel domain is not in `CORS_ORIGINS`; previews need `CORS_ORIGIN_REGEX`. |
 | Browser: blocked mixed content | The frontend is calling `http://`. The API must be HTTPS. |
 | `invalid sslmode value: "require"`, or auth failing with a password you know is right | `.env.production` has CRLF line endings, from being written or edited on Windows. Every value then carries a trailing carriage return, the password included. `file .env.production` will say "CRLF line terminators"; fix it with `dos2unix .env.production`. |
-`. Fix with `sed -i 's/
-$//' .env.production`. |
-| Container restarts during ingestion, seemingly at random | Being OOM-killed mid-embed. `docker inspect` reports `OOMKilled: false` because the kernel killed the *python process inside* the container, so Docker sees a clean exit and restarts it. `sudo dmesg -T \| grep -i 'killed process'` is where the truth is. Lower `EMBED_BATCH_SIZE`. |
-| Worker OOM-killed | 2 GB is tight with two model copies. Move to t3.medium. |
+| Uploads fail at `embedding` with an HTTP error | The embeddings endpoint. `GET /api/health` reports it separately from Pinecone. A 400 mentioning 512 tokens means a chunk is oversized — check `CHUNK_TOKENS`. |
+| Answers cite the wrong things after a working period | The provider may have changed the model behind `EMBEDDING_MODEL`. Run `pytest tests/test_embeddings.py`; the reference-vector test is there to catch exactly this. |
 | Retrieval returns nothing after migrating | Empty Pinecone index — data does not move with the database. Re-index. |
 
 ## Scaling past one box
@@ -526,5 +433,8 @@ uploads in **S3**: the upload endpoint writes the object and stores its key in
 `documents.source_uri`, and `parse()` downloads it to a temp file. Everything else —
 Postgres, Redis, Pinecone — is already network-attached and needs no change.
 
-Until then, scale vertically. One t3.medium comfortably serves a small team; embedding
-throughput, not request concurrency, is the first thing to run out.
+Until then, scale vertically — though there is much less to scale than there used to be.
+Embedding throughput used to be the first thing to run out; now it belongs to the
+provider, and what is left on the box is parsing, chunking and streaming. The embedding
+provider's rate limit is the new ceiling, and `max_jobs` in `app/worker.py` is the dial
+for it.

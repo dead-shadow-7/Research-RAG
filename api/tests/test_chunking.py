@@ -27,7 +27,11 @@ def test_near_empty_blocks_are_dropped():
 
 
 def test_chunks_respect_the_embedding_window():
-    """Oversized chunks are truncated by the model without warning, so cap them here."""
+    """Load-bearing: the embeddings API rejects anything over 512 tokens outright.
+
+    It used to be advisory -- the local model truncated silently and a chunk just lost its
+    tail. Now an oversized chunk fails the whole document's ingestion.
+    """
     long_text = " ".join(f"sentence number {i} about precision bearings." for i in range(400))
     chunks = chunk_documents([Document(page_content=long_text, metadata={"page": 1})])
 

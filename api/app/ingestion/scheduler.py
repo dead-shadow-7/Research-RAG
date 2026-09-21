@@ -2,15 +2,14 @@
 
 Two modes, chosen by `INLINE_INGESTION`:
 
-* **worker** (default) -- the upload is queued in Redis and an arq worker picks it up.
-  The worker is a second process, so it holds a second copy of the embedding model.
-* **inline** -- ingestion runs in this process as a background task. One model instead
-  of two and no Redis at all, which is the difference between fitting and not fitting
-  on a 1 GB host. The cost is that a large upload competes with request handling.
+* **worker** (default) -- the upload is queued in Redis and an arq worker picks it up,
+  so a long document cannot slow down request handling.
+* **inline** -- ingestion runs in this process as a background task. No Redis and no
+  second container, which is what makes the app deployable on a single small host. The
+  cost is that a large upload competes with request handling.
 
-Inline mode runs one document at a time. Concurrent embeds would each hold their own
-batch of activations, and on the hosts where inline mode makes sense that is exactly
-the spike there is no headroom for.
+Inline mode runs one document at a time: several at once would multiply the calls in
+flight to the embedding provider, and its rate limit is the ceiling that matters now.
 """
 
 from __future__ import annotations

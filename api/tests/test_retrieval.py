@@ -48,7 +48,8 @@ def test_empty_input():
     assert apply_floor([], 6, min_ratio=RATIO, min_score=MIN) == []
 
 
-def test_absolute_threshold_alone_works_for_rerank_probabilities():
-    """The rerank path disables the ratio test and uses the probability directly."""
+def test_absolute_threshold_alone_works():
+    """With the ratio disabled the floor is purely absolute -- the shape a calibrated
+    scorer wants, and what a reranker would need if one is ever added back."""
     kept = apply_floor(scored(0.95, 0.61, 0.49, 0.02), 6, min_ratio=0.0, min_score=0.5)
     assert [round(d.metadata['score'], 2) for d in kept] == [0.95, 0.61]

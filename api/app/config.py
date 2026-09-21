@@ -10,13 +10,10 @@ REPO_ROOT = API_DIR.parent
 
 
 class Settings(BaseSettings):
-    # `protected_namespaces=()` is required: pydantic reserves the `model_` prefix,
-    # and `model_cache_dir` would otherwise raise a namespace conflict.
     model_config = SettingsConfigDict(
         env_file=(REPO_ROOT / ".env", API_DIR / ".env"),
         env_file_encoding="utf-8",
         extra="ignore",
-        protected_namespaces=(),
     )
 
     # datastores
@@ -40,26 +37,26 @@ class Settings(BaseSettings):
     # on Qwen3 it costs most of the output budget.
     llm_reasoning: str = "off"
 
-    # embeddings
-    embedding_model: str = "BAAI/bge-base-en-v1.5"
+    # embeddings -- an OpenAI-compatible /embeddings endpoint, not a local model.
+    # Defaults to the same provider as the chat model; set these only to split them.
+    embedding_base_url: str = ""
+    embedding_api_key: str = ""
+    embedding_model: str = "baai/bge-base-en-v1.5"
+    # Immutable once an index exists. bge-base is 768.
     embedding_dim: int = 768
-    model_cache_dir: Path = API_DIR / "storage" / "models"
-    # Load the ONNX model without re-optimising it or arena-allocating. Saves ~167 MB
-    # and leaves embeddings unchanged; turn off only to isolate a FastEmbed problem.
-    lean_onnx: bool = True
-    onnx_threads: int = 1
-    # Sequences per ONNX forward pass. This is the peak-memory dial: each sequence
-    # carries 512x3072 of intermediate activations, so 64 costs hundreds of MB in one
-    # allocation and will OOM a small host mid-ingest. Throughput barely moves on one
-    # vCPU, so keep it small.
-    embed_batch_size: int = 8
-    # Chunks embedded and upserted per slice. Bounds ingestion memory by document size
-    # rather than letting a 200-chunk PDF hold every vector at once.
-    ingest_batch_size: int = 32
+    # Texts per embeddings request. Measured against this provider: flat from 32 to 128
+    # (~3.3s for a batch either way), then it starts to cost -- 256 took 5.3s.
+    embed_batch_size: int = 128
+    # Chunks embedded and upserted per slice. Sets how often ingestion reports progress
+    # and how much work one failed request costs; it is no longer a memory bound.
+    ingest_batch_size: int = 128
+    embed_timeout: float = 60.0
+    # Ingestion is network-bound now, so a transient 429 or 502 must not fail a document.
+    embed_max_retries: int = 4
 
-    # Run ingestion inside this process instead of a separate arq worker. Halves memory
-    # by keeping one copy of the model and removes the need for Redis, at the cost of
-    # ingestion competing with request handling. Intended for small single-box hosts.
+    # Run ingestion inside this process instead of a separate arq worker. Removes the
+    # need for Redis and a second container, at the cost of ingestion competing with
+    # request handling. Intended for small single-box hosts.
     inline_ingestion: bool = False
 
     # chunking / retrieval
@@ -76,10 +73,6 @@ class Settings(BaseSettings):
     # with tests/eval_retrieval.py if the embedding model changes -- this number is a
     # property of the model, not a universal constant.
     context_min_score: float = 0.50
-    rerank_enabled: bool = False
-    rerank_model: str = "Xenova/ms-marco-MiniLM-L-6-v2"
-    # Cross-encoder scores are logits, squashed to a 0-1 relevance probability.
-    rerank_min_score: float = 0.5
 
     # storage / app
     upload_dir: Path = API_DIR / "storage" / "uploads"
@@ -91,6 +84,14 @@ class Settings(BaseSettings):
     # Vercel gives every preview deploy its own hostname, so a fixed list can never
     # cover them. Empty disables the pattern match entirely.
     cors_origin_regex: str = ""
+
+    @property
+    def embedding_url(self) -> str:
+        return self.embedding_base_url or self.openai_base_url
+
+    @property
+    def embedding_key(self) -> str:
+        return self.embedding_api_key or self.openai_api_key
 
     @property
     def cors_origin_list(self) -> list[str]:
@@ -105,7 +106,6 @@ class Settings(BaseSettings):
 def get_settings() -> Settings:
     s = Settings()
     s.upload_dir.mkdir(parents=True, exist_ok=True)
-    s.model_cache_dir.mkdir(parents=True, exist_ok=True)
     return s
 
 

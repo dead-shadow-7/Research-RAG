@@ -29,15 +29,15 @@ async def startup(ctx: dict) -> None:
     if stale := await fail_stale_documents():
         logger.warning("cleared %d document(s) interrupted by a previous restart", stale)
 
-    # Downloads/loads the ONNX model now so the first upload isn't mysteriously slow.
-    logger.info("warming up embedding model (first run downloads weights)...")
+    # Parses the vendored tokenizer now rather than during the first upload.
     await asyncio.to_thread(warm_up)
-    logger.info("embedding model ready")
 
 
 class WorkerSettings:
     functions = [ingest_document]
     on_startup = startup
     redis_settings = redis_settings()
-    max_jobs = 2  # embedding is CPU-bound; don't thrash
+    # Ingestion is network-bound now (parsing aside), so this could go higher; 2 keeps
+    # a burst of uploads from monopolising the embedding provider's rate limit.
+    max_jobs = 2
     job_timeout = 900

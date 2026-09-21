@@ -52,7 +52,7 @@ async def raw_topk(question: str):
 
 
 async def main(use_floor: bool) -> int:
-    mode = "floor + rerank" if settings.rerank_enabled else "floor" if use_floor else "raw top-k"
+    mode = "floor" if use_floor else "raw top-k"
     print(f"mode: {mode}   context_k={settings.context_k} "
           f"ratio={settings.context_min_ratio} min={settings.context_min_score}\n")
 

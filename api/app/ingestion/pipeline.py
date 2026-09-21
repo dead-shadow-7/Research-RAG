@@ -138,9 +138,9 @@ async def run_ingestion(document_id: uuid.UUID) -> int:
         store = get_vector_store()
         # Keep Pinecone metadata lean: the chunk text is stored under `text`, and the
         # bookkeeping fields below are what retrieval and the UI actually need.
-        # Embed and upsert in slices. Doing the whole document at once means peak memory
-        # grows with the document, which is what OOM-kills a small host on a long PDF.
-        # Progress is reported per slice so the UI keeps moving on a large file.
+        # Embed and upsert in slices. This used to bound peak memory; now that embedding
+        # is an API call it bounds how much work a single failed request costs, and gives
+        # the UI something to move on while a long document indexes.
         size = settings.ingest_batch_size
         for start in range(0, len(chunks), size):
             batch = chunks[start : start + size]

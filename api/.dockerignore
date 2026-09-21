@@ -7,8 +7,7 @@
 .venv/
 venv/
 
-# Runtime state. storage/models alone is ~300 MB of ONNX weights, and shipping it would
-# bloat every layer for no gain -- the container downloads it once into its volume.
+# Runtime state: uploaded files belong in the volume, not in a layer.
 storage/
 
 # Build and test artefacts

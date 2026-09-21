@@ -13,7 +13,7 @@ React (Vite :5173) ──HTTP/SSE──▶ FastAPI (:8000) ──▶ Postgres  (
 | Piece | Choice |
 |---|---|
 | Ingestion | PDF (PyMuPDF), Word (docx2txt), Excel (openpyxl), plain text / Markdown, URL (trafilatura) |
-| Embeddings | FastEmbed / ONNX, `BAAI/bge-base-en-v1.5`, 768-dim — local, no `torch` |
+| Embeddings | `bge-base-en-v1.5`, 768-dim, over any OpenAI-compatible `/embeddings` endpoint |
 | Vector store | Pinecone serverless, cosine |
 | Generation | Any OpenAI-compatible provider via `ChatOpenAI` + `OPENAI_BASE_URL`, streamed |
 | Citations | Numbered `[n]` markers, parsed out of the stream and validated against the retrieved set |
@@ -64,10 +64,10 @@ cd frontend && npm run dev
 Open http://localhost:5173. Vite proxies `/api` to port 8000, so there is no CORS step in
 development.
 
-The first worker start downloads the ONNX embedding model (a few hundred MB) into
-`api/storage/models`; it is cached after that. `GET /api/health` reports Postgres, Redis
-and Pinecone independently, and never raises — a failing dependency is reported, not
-hidden.
+There is nothing to download on first run — embedding is an API call, and the only local
+model artefact is a 711 KB tokenizer committed to the repo. `GET /api/health` reports
+Postgres, Redis, the embeddings endpoint and Pinecone independently, and never raises — a
+failing dependency is reported, not hidden.
 
 ## Configuration
 
@@ -84,9 +84,10 @@ Everything is read from `.env` through `app/config.py`. The settings worth knowi
 | `CONTEXT_K` | `6` | **Ceiling**, not a quota — see below. |
 | `CONTEXT_MIN_RATIO` | `0.75` | A chunk must score within this fraction of the best match. |
 | `CONTEXT_MIN_SCORE` | `0.50` | Absolute floor. Below it, the answer isn't in the corpus. |
-| `RERANK_ENABLED` | `false` | Local cross-encoder over the candidates. Off by default — see below. |
 | `CHUNK_TOKENS` / `CHUNK_OVERLAP` | `380` / `64` | Measured in BGE tokens, not characters. |
-| `EMBEDDING_MODEL` / `EMBEDDING_DIM` | `BAAI/bge-base-en-v1.5` / `768` | Must agree with the Pinecone index. |
+| `EMBEDDING_MODEL` / `EMBEDDING_DIM` | `baai/bge-base-en-v1.5` / `768` | Must agree with the Pinecone index, which is immutable. |
+| `EMBEDDING_BASE_URL` / `EMBEDDING_API_KEY` | — | Blank means the same provider as `OPENAI_*`. |
+| `EMBED_BATCH_SIZE` | `128` | Texts per embeddings request. Flat from 32 to 128 on this provider. |
 | `MAX_UPLOAD_MB` | `50` | Enforced while streaming to disk. |
 
 ### Why `CONTEXT_K` is a ceiling
@@ -128,14 +129,11 @@ Add cases to `CASES` in that file as you add documents, including ones with
 `expect=None` — questions the corpus *should not* answer are the ones that catch a floor
 set too low.
 
-### Reranking
-
-`RERANK_ENABLED=true` scores the candidates with a local cross-encoder and thresholds on
-`RERANK_MIN_SCORE` (a probability, since raw cross-encoder output is unbounded logits).
-It is off by default because on this corpus it matched the score floor exactly — 100%
-precision either way — while adding an 80 MB model download and per-query CPU. Turn it
-on when questions legitimately need several chunks and the floor starts admitting noise;
-`eval_retrieval.py` will tell you whether it earns its cost.
+A local cross-encoder reranker was built and then removed: on this corpus it matched the
+score floor exactly — 100% precision either way — while costing an 80 MB model download
+and per-query CPU. If questions start legitimately needing several chunks and the floor
+begins admitting noise, that is when reranking earns its cost; `eval_retrieval.py` is how
+you'd tell.
 
 ### Turning reasoning off
 
@@ -208,13 +206,15 @@ tests drive a stubbed stream.
   delete by metadata filter, so deleting a document walks that ID prefix. Never let
   `add_documents` generate its own IDs. Note `index.list()` yields `ListItem` objects,
   not strings, and `delete()` rejects anything that isn't a `str`.
-- **BGE needs a query prefix, and nothing applies it for you.** FastEmbed's
-  `query_embed()` is a plain alias for `embed()` on BGE models, and
-  `langchain_community`'s `FastEmbedEmbeddings` inherits that. The prefix lives in
-  `BGEFastEmbedEmbeddings.embed_query` and nowhere else; dropping it costs recall
+- **BGE needs a query prefix, and nothing applies it for you.** BGE v1.5 is asymmetric:
+  passages go in bare, queries need an instruction prefix. No embeddings API adds it, so
+  it lives in `BGEAPIEmbeddings.embed_query` and nowhere else; dropping it costs recall
   silently. `tests/test_embeddings.py` guards this.
-- **Chunks are sized in tokens, not characters.** `bge-base-en-v1.5` truncates at 512
-  tokens without warning, so an oversized chunk quietly loses its tail.
+- **`check_embedding_ctx_length=False` is load-bearing.** Left at its default,
+  `OpenAIEmbeddings` tiktoken-encodes the input and posts arrays of token ids rather than
+  strings — meaningless to a BGE backend, whose vocabulary is not tiktoken's.
+- **Chunks are sized in tokens, not characters.** `bge-base-en-v1.5` caps at 512 tokens
+  and the API rejects anything longer outright, failing the whole document.
 - **Citations are the model's assertion here, not the provider's.** Anthropic's
   `search_result` blocks return verified quoted spans; no OpenAI-compatible endpoint has
   an equivalent, so sources are numbered in the prompt and `[n]` markers are parsed back
@@ -252,6 +252,8 @@ tests drive a stubbed stream.
   index; startup asserts the two agree rather than failing later at upsert time.
 - **`uvicorn --reload` does not always catch these edits.** If behaviour doesn't match
   the code — stale settings, an old prompt — restart the process before debugging it.
-- **No `torch`, no `transformers`.** Both were avoided deliberately (ONNX embeddings,
-  direct parsers, a token `length_function` instead of `from_huggingface_tokenizer`). If
-  either shows up in the lockfile, something pulled the heavy path back in.
+- **No local model at all, and no `torch` / `transformers` / `onnxruntime`.** Embedding
+  runs on the provider; the one local artefact is the vendored tokenizer, read through the
+  3 MB `tokenizers` wheel rather than `from_huggingface_tokenizer`, which would drag the
+  whole torch stack in. If any of those show up in the lockfile, something pulled the
+  heavy path back in.

@@ -25,8 +25,9 @@ dependencies = [
     # vector store (direct SDK; langchain-pinecone caps at python <3.14
     # and drags in langchain-openai)
     "pinecone==10.0.0",
-    # embeddings: local ONNX, no torch / no transformers
-    "fastembed==0.8.0",
+    # embeddings run on the provider's API (langchain-openai above serves both chat and
+    # /embeddings). `tokenizers` is here only to size chunks in the embedding model's own
+    # tokens -- a 3 MB rust wheel, versus `transformers` which would pull torch in.
     "tokenizers==0.23.2",
     # parsing
     "pymupdf==1.28.2",
@@ -49,6 +50,11 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
 packages = ["app", "app.routers", "app.ingestion"]
+
+# The vendored BGE tokenizer. Without this it is absent from a non-editable install and
+# chunk sizing fails at import.
+[tool.setuptools.package-data]
+app = ["data/*.json"]
 
 [tool.ruff]
 line-length = 100

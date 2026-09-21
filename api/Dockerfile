@@ -4,11 +4,9 @@
 
 FROM python:3.14-slim
 
-# onnxruntime links against libgomp. Everything else in the tree ships manylinux
-# wheels, so no compiler is needed.
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends libgomp1 \
-    && rm -rf /var/lib/apt/lists/*
+# No apt layer: every dependency here ships a manylinux wheel, so there is nothing to
+# compile and nothing to link against. (libgomp1 used to be needed for onnxruntime, which
+# left with the local embedding model.)
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -29,16 +27,14 @@ RUN pip install --no-cache-dir -e .
 COPY alembic.ini ./
 COPY alembic ./alembic
 
-# Paths are set explicitly rather than inherited from the config defaults, so the
-# volume mount point is obvious from the Dockerfile alone.
+# Set explicitly rather than inherited from the config default, so the volume mount point
+# is obvious from the Dockerfile alone.
 ENV UPLOAD_DIR=/app/storage/uploads \
-    MODEL_CACHE_DIR=/app/storage/models \
     PYTHONPATH=/app
 
-# Never root. The storage tree is owned by this user because both the API (which writes
-# uploads) and the worker (which writes the model cache) run as it.
+# Never root. The storage tree is owned by this user because the API writes uploads into it.
 RUN useradd --create-home --uid 10001 app \
-    && mkdir -p /app/storage/uploads /app/storage/models \
+    && mkdir -p /app/storage/uploads \
     && chown -R app:app /app
 USER app
 

@@ -1,4 +1,4 @@
-# Single-container stack for a 1 GB host (AWS free tier t2/t3.micro).
+# Minimal stack for a small host, including free tiers.
 #
 #   docker compose -f docker-compose.free.yml up -d --build
 #
@@ -6,9 +6,10 @@
 #   * no worker  -- ingestion runs inside the API process (INLINE_INGESTION)
 #   * no redis   -- nothing left to queue
 #
-# That is the difference between ~1.2 GB and ~460 MB resident: the worker was a second
-# process holding its own copy of the embedding model. The trade is that a large upload
-# competes with request handling, and ingestion runs one document at a time.
+# Two containers instead of four, and no managed Redis to pay for. The trade is that a
+# large upload competes with request handling and ingestion runs one document at a time.
+# Since embedding moved to the provider's API this costs far less than it used to: the
+# worker is no longer holding a second copy of a 330 MB model, it is mostly waiting on HTTP.
 #
 # Once you outgrow it, docker-compose.prod.yml is the same app with the worker restored.
 
@@ -22,20 +23,15 @@ services:
       # Set here rather than in .env.production so this file is self-describing: the
       # whole point of this stack is that there is no worker to hand jobs to.
       INLINE_INGESTION: "true"
-      # Keep the allocator and ONNX from spreading across threads on a 1 vCPU box.
-      OMP_NUM_THREADS: "1"
-      MALLOC_ARENA_MAX: "2"
-      # Peak memory during ingestion, not steady state, is what kills a 1 GB host:
-      # a long PDF at the default batch size allocates hundreds of MB of activations
-      # in one go and gets OOM-killed mid-embed.
-      EMBED_BATCH_SIZE: "4"
-      INGEST_BATCH_SIZE: "16"
     volumes:
       - storage:/app/storage
     expose:
       - "8000"
-    # A 1 GB host has no room for a runaway container to take the OS with it.
-    mem_limit: 768m
+    # No model in the process, so this is FastAPI and the parsers plus one document's
+    # vectors. Measured at ~205 MB with 200 chunks embedded in a single call -- the case
+    # that used to OOM. 512m is that with room, and a ceiling so a leak cannot take the
+    # host's OS down with it.
+    mem_limit: 512m
 
   caddy:
     image: caddy:2-alpine

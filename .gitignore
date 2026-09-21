@@ -13,12 +13,9 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 
-# Runtime storage (uploads + downloaded ONNX model weights)
+# Runtime storage (uploaded files)
 api/storage/uploads/*
 !api/storage/uploads/.gitkeep
-api/storage/models/
-# A relative MODEL_CACHE_DIR drops a second cache at the repo root; ~400 MB of it.
-/storage/
 
 # Node
 node_modules/
