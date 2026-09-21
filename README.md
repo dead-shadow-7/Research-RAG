@@ -4,10 +4,17 @@ Upload documents, ask questions, and get streamed answers where every claim carr
 passage it came from.
 
 ```
-React (Vite :5173) ──HTTP/SSE──▶ FastAPI (:8000) ──▶ Postgres  (documents, chunks, jobs)
-                                      │            ──▶ Pinecone (vectors)
-                                      │            ──▶ LLM      (streamed answers)
-                                      └─enqueue──▶ Redis ──▶ arq worker (parse→chunk→embed→upsert)
+Browser (React / Vite :5173) ──sign in──▶ Supabase Auth
+   │                                            │
+   │  ◀──────────────── JWT ────────────────────┘
+   │
+   └── HTTP/SSE + Bearer ──▶ FastAPI (:8000)   verifies the JWT against Supabase's JWKS
+                                   │
+                                   ├──▶ Postgres    documents, chunks, jobs — scoped by owner_id
+                                   ├──▶ Pinecone    vectors — one namespace per user
+                                   ├──▶ Embeddings  bge-base over HTTP, no local model
+                                   ├──▶ LLM         streamed answers
+                                   └──enqueue──▶ Redis ──▶ arq worker (parse→chunk→embed→upsert)
 ```
 
 | Piece | Choice |
@@ -28,7 +35,7 @@ Pinecone keeps each user's vectors in their own namespace, so a search cannot re
 another tenant's passages even if a query were built wrongly.
 
 Deploying it: **[DEPLOYMENT.md](DEPLOYMENT.md)** — Vercel, AWS, Supabase and Pinecone,
-including the three code changes the app needs before it will run outside a dev proxy.
+with the measured memory and throughput figures behind the single-box layout.
 
 ## Prerequisites
 
@@ -84,9 +91,21 @@ Open http://localhost:5173. Vite proxies `/api` to port 8000, so there is no COR
 development.
 
 There is nothing to download on first run — embedding is an API call, and the only local
-model artefact is a 711 KB tokenizer committed to the repo. `GET /api/health` reports
-Postgres, Redis, the embeddings endpoint and Pinecone independently, and never raises — a
-failing dependency is reported, not hidden.
+model artefact is a 711 KB tokenizer committed to the repo.
+
+`GET /api/health` reports each dependency separately and never raises; a failing one is
+reported, not hidden:
+
+```json
+{"auth": "ok (configured)", "redis": "ok", "database": "ok",
+ "embeddings": "ok (768 dims)", "pinecone": "ok (190 vectors)",
+ "langsmith": "ok (tracing to 'rag')", "status": "ok"}
+```
+
+`auth` and `langsmith` are configuration checks rather than liveness ones. Both exist
+because their failure mode is silence: without `SUPABASE_URL` every authenticated request
+is a 500 with nothing but a traceback to go on, and LangSmith variables set only in `.env`
+are ignored with no indication of why.
 
 ## Configuration
 
@@ -188,6 +207,37 @@ Note the tradeoff: with reasoning off the model is more literal and less able to
 reconcile conflicting sources. If multi-document answers start to look thin, try
 `LLM_REASONING=auto` before blaming retrieval.
 
+### Why embedding runs on the provider
+
+It used to run locally, as an ONNX model loaded into the API and the worker. That single
+choice drove most of the operational pain: ~330 MB resident per process, a 361 MB
+download on first boot, `libgomp1` in the image, and a family of tuning dials
+(`EMBED_BATCH_SIZE`, `INGEST_BATCH_SIZE`, `LEAN_ONNX`, `ONNX_THREADS`) that existed only
+to stop the model eating a 1 GB host. It still got OOM-killed mid-ingest.
+
+The gateway already in use serves the same model. Moving to it was safe because the
+vectors are the same ones — measured, not assumed:
+
+| | |
+|---|---|
+| cosine vs the locally-embedded reference vector | **0.99999423** |
+| the existing Pinecone index | unchanged — no re-index |
+| `CONTEXT_MIN_SCORE` | still calibrated; it was measured on this model |
+
+What it bought, measured on the current build:
+
+| | before | after |
+|---|---|---|
+| 60-page PDF, end to end | ~6 min on a t2.micro | **3.75 s** |
+| peak RSS embedding 200 chunks at once | OOM-killed a 1 GB host | **206 MB** |
+| image size | 879 MB | 678 MB |
+| virtualenv + model cache | 454 MB + 361 MB | 327 MB + 0 |
+
+`onnxruntime`, `numpy` and `huggingface-hub` left with it. `tests/test_embeddings.py`
+keeps the reference vector and asserts cosine > 0.99999 on every run — if the provider
+ever swaps the weights behind that model name, every vector already in Pinecone silently
+stops matching, and that test is the only thing that would say so.
+
 ## API
 
 | Method | Path | Purpose |
@@ -220,7 +270,7 @@ The chat stream emits these SSE events, in this order:
 cd api
 .venv/Scripts/python tests/make_fixture.py     # builds the sample PDF once
 .venv/Scripts/python -m pytest
-.venv/Scripts/python -m ruff check app tests
+.venv/Scripts/python -m ruff check app tests scripts
 ```
 
 The suite is deliberately aimed at this stack's silent failure modes: embedding shape and
@@ -234,6 +284,24 @@ tests our verification policy — including that an HS256 token signed with the 
 is rejected. `test_tenancy.py` runs against the local Postgres inside a transaction that
 is rolled back afterwards, because the thing worth testing lives in the WHERE clauses and
 a mocked session would only test the mock.
+
+## Operations
+
+Postgres mirrors every chunk's text, which makes Pinecone reconstructible. `scripts/reindex.py`
+re-embeds from those rows and upserts into each document's owner namespace:
+
+```bash
+cd api
+PYTHONPATH=. .venv/Scripts/python scripts/reindex.py --all
+PYTHONPATH=. .venv/Scripts/python scripts/reindex.py --document <uuid>
+PYTHONPATH=. .venv/Scripts/python scripts/reindex.py --all --purge-default
+```
+
+It is the recovery path for a lost index, and the repair when vectors land in the wrong
+namespace — which is what a stale worker does, since `arq` has no `--reload`.
+`--purge-default` empties Pinecone's default namespace, where nothing belongs once
+documents are owned: no query reaches it and no delete cleans it up, but it still counts
+against the storage quota.
 
 ## Things worth knowing before you change something
 
@@ -294,8 +362,26 @@ a mocked session would only test the mock.
   reliable check — deleted chunks stop matching immediately.
 - **The Pinecone index dimension is immutable.** Changing embedding model means a new
   index; startup asserts the two agree rather than failing later at upsert time.
-- **`uvicorn --reload` does not always catch these edits.** If behaviour doesn't match
-  the code — stale settings, an old prompt — restart the process before debugging it.
+- **`uvicorn --reload` does not always catch these edits, and `arq` has no reload at
+  all.** A worker left running across a change keeps executing the old code with no
+  warning. That is not cosmetic: after namespaces were introduced, a stale worker wrote
+  187 vectors into the default namespace while queries looked in the user's, and the only
+  symptom was an answer that read like a retrieval-quality problem. Restart the worker
+  whenever ingestion code changes; `scripts/reindex.py` repairs the damage.
+- **`.env` is not a shell file — nothing exports it.** `pydantic-settings` reads it into
+  `Settings` *fields*, and `extra="ignore"` silently discards everything else. Any library
+  that reads `os.environ` for itself (LangSmith does) therefore sees nothing unless
+  `config.py` declares the variable and exports it. Under Docker it works anyway, because
+  compose's `env_file` does reach the environment — so this shape of bug passes in
+  production and fails on your laptop.
+- **Keep `UPLOAD_DIR` absolute, or unset.** A relative path resolves against the working
+  directory of whichever process reads it, and `documents.source_uri` stores whatever it
+  produces — so relative paths end up in the database, and the worker's cwd is not always
+  the API's. `config.py` calls `.resolve()` for this reason; the default is derived from
+  the package location rather than the cwd.
+- **Pinecone Starter allows 100 namespaces per index, so 100 users.** Sign-up 101
+  succeeds and then fails at upsert, landing the document in `failed` with a Pinecone
+  error that does not explain itself. It is a cliff, not a slope.
 - **No local model at all, and no `torch` / `transformers` / `onnxruntime`.** Embedding
   runs on the provider; the one local artefact is the vendored tokenizer, read through the
   3 MB `tokenizers` wheel rather than `from_huggingface_tokenizer`, which would drag the
