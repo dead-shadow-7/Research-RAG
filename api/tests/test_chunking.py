@@ -52,3 +52,40 @@ def test_chunk_metadata_is_populated():
 def test_settings_are_consistent():
     assert settings.chunk_overlap < settings.chunk_tokens
     assert settings.context_k <= settings.retrieve_k
+
+
+# --- Invariants the spreadsheet path used to break ------------------------------------
+#
+# Both of these failed until block sizing became token-aware and cleaning learned to
+# leave structured blocks alone. They are asserted after cleaning *and* chunking on
+# purpose: the parser-level test below passes either way, which is why the defects went
+# unnoticed. `tests/eval_retrieval.py` measures what they cost.
+
+
+def test_every_spreadsheet_chunk_carries_its_column_header(tmp_path):
+    """A retrieved spreadsheet chunk has to say what its columns are.
+
+    Without the header a chunk reads `SKU-0022 | precision bearing type 22 | 220` with
+    nothing to say those fields are sku, description and price. The parser promises this
+    invariant and `test_xlsx_repeats_the_header_in_every_block` checks it -- but at the
+    parser, before cleaning and chunking have run.
+    """
+    from app.ingestion.parsers import parse_xlsx
+    from tests.eval_corpus import build_xlsx
+
+    chunks = chunk_documents(clean_documents(parse_xlsx(build_xlsx(tmp_path / "parts.xlsx"))))
+    inventory = [c for c in chunks if "SKU-" in c.page_content]
+    assert inventory, "fixture produced no inventory rows"
+
+    missing = [c for c in inventory if "sku | description" not in c.page_content]
+    assert not missing, f"{len(missing)} of {len(inventory)} inventory chunks lost the header"
+
+
+def test_sheet_name_survives_cleaning(tmp_path):
+    """Which sheet a row came from is part of its meaning in a multi-sheet workbook."""
+    from app.ingestion.parsers import parse_xlsx
+    from tests.eval_corpus import build_xlsx
+
+    cleaned = clean_documents(parse_xlsx(build_xlsx(tmp_path / "parts.xlsx")))
+    kept = sum("Sheet: Inventory" in d.page_content for d in cleaned)
+    assert kept > 0, f"sheet name stripped from all {len(cleaned)} blocks"

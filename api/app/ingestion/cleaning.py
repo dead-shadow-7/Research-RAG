@@ -41,13 +41,26 @@ def _edge_lines(doc: Document) -> list[str]:
     return [lines[0], lines[-1]] if len(lines) > 1 else [lines[0]]
 
 
+def _is_structured(doc: Document) -> bool:
+    """Blocks a parser built deliberately, where repetition carries meaning.
+
+    Spreadsheet blocks repeat their sheet name and column header on purpose, so that a
+    block retrieved on its own says what its columns are. Boilerplate detection sees
+    exactly the signal it is built to remove -- the same line at the edge of most
+    blocks -- and strips both. Measured on a two-sheet workbook it deleted the sheet
+    name from every block.
+    """
+    return bool(doc.metadata.get("structured"))
+
+
 def _find_boilerplate(docs: list[Document]) -> set[str]:
-    if len(docs) < 3:
+    candidates = [d for d in docs if not _is_structured(d)]
+    if len(candidates) < 3:
         return set()
     counts: Counter[str] = Counter()
-    for doc in docs:
+    for doc in candidates:
         counts.update(set(_edge_lines(doc)))
-    threshold = max(2, int(len(docs) * BOILERPLATE_RATIO))
+    threshold = max(2, int(len(candidates) * BOILERPLATE_RATIO))
     return {line for line, n in counts.items() if n >= threshold}
 
 
@@ -57,12 +70,17 @@ def clean_documents(docs: list[Document]) -> list[Document]:
 
     cleaned: list[Document] = []
     for doc in docs:
-        lines = [
-            ln
-            for ln in doc.page_content.split("\n")
-            if ln.strip() not in boilerplate and not _PAGE_NUMBER.match(ln)
-        ]
-        text = clean_text("\n".join(lines))
+        if _is_structured(doc):
+            # Whitespace normalisation only. Dropping a line here means dropping a row,
+            # and a page-number pattern is indistinguishable from a numeric cell.
+            text = clean_text(doc.page_content)
+        else:
+            lines = [
+                ln
+                for ln in doc.page_content.split("\n")
+                if ln.strip() not in boilerplate and not _PAGE_NUMBER.match(ln)
+            ]
+            text = clean_text("\n".join(lines))
         if len(text) < MIN_BLOCK_CHARS:
             continue
         cleaned.append(Document(page_content=text, metadata=dict(doc.metadata)))

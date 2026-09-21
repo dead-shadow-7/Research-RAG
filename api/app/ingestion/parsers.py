@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import codecs
 from pathlib import Path
+from statistics import median
 
 import docx2txt
 import httpx
@@ -19,6 +20,7 @@ import trafilatura
 from langchain_core.documents import Document
 from openpyxl import load_workbook
 
+from app.config import settings
 from app.models import SourceType
 
 EXTENSION_MAP = {
@@ -34,9 +36,14 @@ EXTENSION_MAP = {
     ".markdown": SourceType.TXT,
 }
 
-# Rows per Excel chunk. The header row is repeated in each so a chunk is
-# self-describing once it is retrieved out of context.
-XLSX_ROWS_PER_BLOCK = 40
+# Upper bound on rows per Excel block. The real size is computed per sheet from the
+# token budget (see `_rows_per_block`), because a fixed row count is a bet on how wide
+# the table is, and losing that bet is silent.
+XLSX_MAX_ROWS_PER_BLOCK = 200
+
+# Leaves room for the "Sheet: <name>" line and the splitter's own overhead, so a block
+# lands inside the budget rather than exactly on it.
+XLSX_BLOCK_MARGIN_TOKENS = 32
 
 USER_AGENT = "Mozilla/5.0 (compatible; RAG-ingest/0.1)"
 
@@ -150,6 +157,30 @@ def _row_to_line(row: tuple) -> str:
     return " | ".join("" if c is None else str(c).strip() for c in row)
 
 
+def _rows_per_block(header: str, rows: list[str]) -> int:
+    """How many rows fit in a block without the chunker having to split it.
+
+    The header is repeated in every block so a retrieved block says what its columns
+    are. That promise only holds if the block survives chunking intact, and at a fixed
+    40 rows it did not: a typical inventory sheet produced 569-token blocks against a
+    380-token CHUNK_TOKENS, so the splitter halved each one and every second chunk
+    arrived as bare rows with no column names.
+
+    Sizing by tokens gives a wide table fewer rows per block and a narrow one more,
+    which is what the fixed count was only ever approximating.
+    """
+    from app.embeddings import count_tokens
+
+    budget = settings.chunk_tokens - count_tokens(header) - XLSX_BLOCK_MARGIN_TOKENS
+    if budget <= 0:
+        return 1
+
+    # Median, not mean: one pathological row should not shrink every block.
+    sample = rows[:50] or [""]
+    per_row = max(1, int(median(count_tokens(r) for r in sample)))
+    return max(1, min(XLSX_MAX_ROWS_PER_BLOCK, budget // per_row))
+
+
 def parse_xlsx(path: Path) -> list[Document]:
     docs: list[Document] = []
     wb = load_workbook(path, read_only=True, data_only=True)
@@ -164,17 +195,24 @@ def parse_xlsx(path: Path) -> list[Document]:
                 docs.append(
                     Document(
                         page_content=f"Sheet: {ws.title}\n{header}",
-                        metadata={"page": sheet_index, "sheet": ws.title},
+                        metadata={"page": sheet_index, "sheet": ws.title, "structured": True},
                     )
                 )
                 continue
-            for start in range(0, len(body), XLSX_ROWS_PER_BLOCK):
-                block = body[start : start + XLSX_ROWS_PER_BLOCK]
-                lines = "\n".join(_row_to_line(r) for r in block)
+            body_lines = [_row_to_line(r) for r in body]
+            per_block = _rows_per_block(header, body_lines)
+            for start in range(0, len(body_lines), per_block):
+                lines = "\n".join(body_lines[start : start + per_block])
                 docs.append(
                     Document(
                         page_content=f"Sheet: {ws.title}\n{header}\n{lines}",
-                        metadata={"page": sheet_index, "sheet": ws.title},
+                        # `structured` tells cleaning to leave this block alone: the
+                        # repeated header and sheet line are the point, not boilerplate.
+                        metadata={
+                            "page": sheet_index,
+                            "sheet": ws.title,
+                            "structured": True,
+                        },
                     )
                 )
     finally:

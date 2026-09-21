@@ -146,32 +146,44 @@ Scores separate cleanly, so a floor fixes it. Measured with `bge-base-en-v1.5`:
 | answerable questions | 0.57 – 0.85 |
 | questions the corpus cannot answer | 0.42 – 0.43 |
 
-`CONTEXT_MIN_SCORE=0.50` sits in that gap. Combined with the ratio test, across a
-seven-case eval:
+`CONTEXT_MIN_SCORE=0.50` sits in that gap. The floor does substantial work — measured
+across 22 cases on the mixed-type eval corpus, precision per document type:
 
-| | chunks sent | precision | unanswerable questions handled |
-|---|---|---|---|
-| raw top-k | 42 | 12% | 0/2 — returned six chunks each |
-| with the floor | 5 | 100% | 2/2 — returned nothing |
+| | pdf | docx | txt | xlsx | url | negatives |
+|---|---|---|---|---|---|---|
+| raw top-k | 17% | 17% | 17% | 17% | 17% | 0/4, 24 chunks leaked |
+| with the floor | 100% | 75% | 50% | 27% | 100% | 3/4, 1 chunk leaked |
 
-End to end that took a real query from 1734 input tokens to 242. Returning nothing is a
-feature: the chat endpoint then says the documents don't cover it, instead of answering
-from the best of a bad set.
+Returning nothing is a feature: the chat endpoint then says the documents don't cover it,
+instead of answering from the best of a bad set.
+
+**But one global threshold does not fit every document type.** The same eval reports the
+best-chunk score for each group, and the ranges overlap:
+
+| group | | min | median | max |
+|---|---|---|---|---|
+| pdf | answerable | 0.561 | 0.720 | 0.851 |
+| docx | answerable | 0.631 | 0.660 | 0.739 |
+| txt | answerable | 0.574 | 0.617 | 0.667 |
+| xlsx | answerable | 0.596 | 0.631 | 0.637 |
+| url | answerable | **0.466** | 0.641 | 0.723 |
+| negative | unanswerable | 0.409 | 0.461 | **0.556** |
+
+A real answer at 0.466 sits below an unanswerable question at 0.556, so no single number
+separates them: 0.50 drops the first and admits the second. Both show up as failures in
+the eval, and neither is fixable by moving the threshold.
+
+They fail for different reasons. The 0.466 case ranks its correct chunk **first** — the
+answer is one sentence in a chunk covering three topics, so it is a weak match in
+absolute terms while still being the best one available. The 0.555 case asks which
+supplier is in Japan, and the supplier table is genuinely the most similar thing in the
+corpus; a bi-encoder measures what a chunk is *about*, not whether it contains the fact.
+Separating those needs a reranker or the model itself, not a number. The system prompt
+already instructs the model to say when the sources do not answer the question, which is
+the cheaper half of that. See **[Retrieval eval](#retrieval-eval)**.
 
 **Re-measure if you change the embedding model.** These numbers are properties of
-`bge-base-en-v1.5`, not universal constants:
-
-```bash
-.venv/Scripts/python tests/eval_retrieval.py --user <owner-id>
-.venv/Scripts/python tests/eval_retrieval.py --user <owner-id> --no-floor
-```
-
-`--user` is required because vectors live in a per-user namespace: an evaluation has to
-say whose corpus it is measuring. The id is `documents.owner_id` for what you indexed.
-
-Add cases to `CASES` in that file as you add documents, including ones with
-`expect=None` — questions the corpus *should not* answer are the ones that catch a floor
-set too low.
+`bge-base-en-v1.5`, not universal constants.
 
 A local cross-encoder reranker was built and then removed: on this corpus it matched the
 score floor exactly — 100% precision either way — while costing an 80 MB model download
@@ -284,6 +296,40 @@ tests our verification policy — including that an HS256 token signed with the 
 is rejected. `test_tenancy.py` runs against the local Postgres inside a transaction that
 is rolled back afterwards, because the thing worth testing lives in the WHERE clauses and
 a mocked session would only test the mock.
+
+## Retrieval eval
+
+`tests/eval_retrieval.py` builds a synthetic corpus covering every supported source type,
+embeds it into a reserved Pinecone namespace, measures retrieval, and tears the namespace
+down:
+
+```bash
+cd api
+PYTHONPATH=. .venv/Scripts/python tests/eval_retrieval.py              # build, measure, teardown
+PYTHONPATH=. .venv/Scripts/python tests/eval_retrieval.py --no-floor   # unfiltered comparison
+PYTHONPATH=. .venv/Scripts/python tests/eval_retrieval.py --keep       # leave it up to poke at
+```
+
+It owns its corpus rather than measuring your live index. An earlier version measured
+whatever happened to be indexed, so its precision figure read 100% one week and 56% the
+next — the corpus had changed, not the code, and the number could not be used to judge a
+change. It is a script and not a pytest test because a run costs an embedding round trip
+for the whole corpus.
+
+The corpus documents deliberately overlap. The spreadsheet carries a `warranty_months`
+column so that warranty questions — whose real answer is one prose paragraph in the PDF —
+have 150 tabular rows competing for them. Two of the four negatives are structurally
+identical to answerable questions for this corpus ("Which supplier is based in Japan?"),
+because a floor tuned only against absurd negatives passes those and still admits noise.
+
+Two columns matter most. **recall@k** is whether the chunk holding the answer came back
+at all; **floored** is whether it survived `apply_floor`. A gap between them is a
+mis-calibrated threshold rather than a retrieval failure, and the two want different
+fixes. On the current corpus recall@k is perfect for every type — retrieval finds the
+answer every time, and every failure is the floor discarding it.
+
+Add cases to `CASES` in `tests/eval_cases.py`, including ones with `expect=None`:
+questions the corpus *should not* answer are what catch a floor set too low.
 
 ## Operations
 
