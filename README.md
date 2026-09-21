@@ -320,7 +320,11 @@ Everything below assumes the caller is authenticated but otherwise untrusted.
   restart, and two replicas would each allow the full limit — fix that before scaling
   out, not before.
 - **Quotas.** 20 documents and 8 MB per file per user, which also bounds what one
-  account can put on the host's disk.
+  account can put on the host's disk. The size is checked in the browser as well, and
+  not for politeness: a body over Caddy's `request_body` limit is rejected *by Caddy*,
+  which never reaches FastAPI and so carries no CORS headers — the browser then refuses
+  to read the 413 and `fetch` fails with a bare "NetworkError" that says nothing about
+  size. Checking `file.size` first means the bytes are never sent.
 - **Not covered.** Pinecone's Starter plan allows 100 namespaces, so the hundredth user
   is the last one; sign-up 101 fails at upsert with a Pinecone error. Supabase
   rate-limits sign-in and sign-up on its side, so credential stuffing is their

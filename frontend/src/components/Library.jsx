@@ -86,15 +86,32 @@ function DocumentRow({ doc, selected, onToggle, onRemove }) {
   )
 }
 
+// Keep in step with MAX_UPLOAD_MB in api/app/config.py. The server is the authority;
+// this exists so an oversized file fails with a sentence instead of a network error.
+const MAX_UPLOAD_MB = 8
+const MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024
+
 export default function Library({ selectedIds, onSelectionChange }) {
   const { data: documents = [], isLoading, isError } = useDocuments()
   const { upload, addUrl, remove } = useDocumentMutations()
   const [dragging, setDragging] = useState(false)
   const [url, setUrl] = useState('')
   const fileInput = useRef(null)
+  const [sizeError, setSizeError] = useState(null)
 
   const addFiles = (files) => {
-    for (const file of files) upload.mutate(file)
+    // Checked here as well as on the server, because the server's rejection is not
+    // readable in the browser: a body over Caddy's limit is refused by the proxy, which
+    // has no CORS headers to add, so fetch() fails with a bare "NetworkError" instead
+    // of a size message. Stopping it here means the bytes are never sent at all.
+    const chosen = [...files]
+    const tooBig = chosen.filter((f) => f.size > MAX_UPLOAD_BYTES)
+    setSizeError(
+      tooBig.length
+        ? `${tooBig.map((f) => f.name).join(', ')} — over the ${MAX_UPLOAD_MB} MB limit.`
+        : null,
+    )
+    for (const file of chosen.filter((f) => f.size <= MAX_UPLOAD_BYTES)) upload.mutate(file)
   }
 
   const toggle = (id) => {
@@ -110,7 +127,9 @@ export default function Library({ selectedIds, onSelectionChange }) {
     setUrl('')
   }
 
-  const error = upload.error || addUrl.error || remove.error
+  const error = sizeError
+    ? { message: sizeError }
+    : upload.error || addUrl.error || remove.error
 
   return (
     <aside className="edge-lit flex max-h-[45vh] w-full shrink-0 flex-col border-b border-rule bg-panel md:h-full md:max-h-none md:w-[320px] md:border-r md:border-b-0">

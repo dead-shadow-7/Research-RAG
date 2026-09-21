@@ -16,6 +16,12 @@
 	# Uploads are capped at MAX_UPLOAD_MB (8 by default) in the application; keep this
 	# above it so the proxy is never the thing that rejects a valid file, but not so far
 	# above that a huge body is streamed to the app only to be refused there.
+	#
+	# A rejection *here* is not readable by a browser. Caddy writes the 413 itself, so
+	# the request never reaches FastAPI and CORSMiddleware never adds
+	# Access-Control-Allow-Origin -- fetch() then reports a bare "NetworkError" with no
+	# mention of size. That is why the frontend checks file.size before uploading: this
+	# limit is the backstop for clients that are not browsers and do not care about CORS.
 	request_body {
 		max_size 12MB
 	}
