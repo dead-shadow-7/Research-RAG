@@ -13,10 +13,12 @@ from __future__ import annotations
 import asyncio
 import uuid
 from datetime import UTC, datetime
+from functools import partial
 
 from langchain_core.documents import Document as LCDocument
 from sqlalchemy import delete, select
 
+from app.auth import tenant_namespace
 from app.config import settings
 from app.db import session_scope
 from app.ingestion.chunking import chunk_documents
@@ -67,13 +69,13 @@ async def _fail(document_id: uuid.UUID, job_id: uuid.UUID, exc: Exception) -> No
         await session.commit()
 
 
-async def _load_document(document_id: uuid.UUID) -> tuple[str, str, str] | None:
-    """Return (title, source_type, source_uri) without holding the session open."""
+async def _load_document(document_id: uuid.UUID) -> tuple[str, str, str, uuid.UUID] | None:
+    """Return (title, source_type, source_uri, owner_id) without holding the session open."""
     async with session_scope() as session:
         doc = await session.get(Document, document_id)
         if doc is None:
             return None
-        return doc.title, doc.source_type, doc.source_uri
+        return doc.title, doc.source_type, doc.source_uri, doc.owner_id
 
 
 async def _persist(document_id: uuid.UUID, job_id: uuid.UUID, chunks: list[LCDocument]) -> None:
@@ -112,7 +114,10 @@ async def run_ingestion(document_id: uuid.UUID) -> int:
     loaded = await _load_document(document_id)
     if loaded is None:
         return 0
-    title, source_type, source_uri = loaded
+    title, source_type, source_uri, owner_id = loaded
+    # Read from the row, never from the job payload: a queued job cannot then be
+    # redirected into someone else's namespace by tampering with what was enqueued.
+    namespace = tenant_namespace(owner_id)
 
     job_id = await _start_job(document_id)
     try:
@@ -158,7 +163,12 @@ async def run_ingestion(document_id: uuid.UUID) -> int:
                 for c in batch
             ]
             await asyncio.to_thread(
-                store.add_documents, payload, ids=[c.metadata["vector_id"] for c in batch]
+                partial(
+                    store.add_documents,
+                    payload,
+                    ids=[c.metadata["vector_id"] for c in batch],
+                    namespace=namespace,
+                )
             )
             done = min(start + size, len(chunks))
             await _progress(
@@ -176,10 +186,12 @@ async def run_ingestion(document_id: uuid.UUID) -> int:
         raise
 
 
-async def delete_document_data(document_id: uuid.UUID) -> int:
+async def delete_document_data(document_id: uuid.UUID, owner_id: uuid.UUID) -> int:
     """Remove a document's vectors from Pinecone. Rows cascade from the DB delete."""
     store = get_vector_store()
-    return await asyncio.to_thread(store.delete_document, str(document_id))
+    return await asyncio.to_thread(
+        partial(store.delete_document, str(document_id), namespace=tenant_namespace(owner_id))
+    )
 
 
 async def fail_stale_documents() -> int:

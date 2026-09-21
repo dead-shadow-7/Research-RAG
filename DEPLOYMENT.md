@@ -1,7 +1,7 @@
 # Deployment guide
 
-Target: **Vercel** (frontend) · **AWS EC2** (API + worker) · **Supabase** (Postgres) ·
-**Pinecone** (vectors) · your existing OpenAI-compatible LLM endpoint.
+Target: **Vercel** (frontend) · **AWS EC2** (API + worker) · **Supabase** (Postgres *and*
+auth) · **Pinecone** (vectors) · your existing OpenAI-compatible LLM endpoint.
 
 ```
 Browser ──▶ Vercel (static React)
@@ -12,12 +12,15 @@ Browser ──▶ Vercel (static React)
                                              ├─ worker   (arq: parse→chunk→embed)
                                              └─ redis    (job queue)
                                                   │
-                          Supabase (Postgres) ◀───┤
-                          Pinecone (vectors)  ◀───┤
-                          LLM endpoint        ◀───┘
+              Supabase (Postgres + auth) ◀───────┤
+                      Pinecone (vectors) ◀───────┤
+                            LLM endpoint ◀───────┘
 ```
 
-## Read this first — four things that will bite you
+The browser signs in against Supabase directly and sends the resulting JWT to the API,
+which verifies it against Supabase's public keys — no auth traffic passes through EC2.
+
+## Read this first — five things that will bite you
 
 1. **The API and the worker must share a filesystem.** Upload writes the file to
    `storage/uploads/`, then the *worker* parses it. Split them across separate hosts or
@@ -36,6 +39,10 @@ Browser ──▶ Vercel (static React)
    box restarts mid-ingest, queued jobs are lost — the worker's `fail_stale_documents()`
    already marks those documents failed on startup so they don't hang at "embedding"
    forever, and re-uploading retries them.
+5. **Email confirmation must be off, or sign-up appears to do nothing.** This app signs
+   people in the moment they create an account; there is no "check your inbox" screen and
+   no email to send. Leave *Confirm email* enabled in Supabase and `signUp` returns no
+   session, so the form just sits there — step 1.5.
 
 ---
 
@@ -66,6 +73,29 @@ Browser ──▶ Vercel (static React)
    ```
 
    Verify in the Supabase table editor that `documents`, `chunks` and `ingest_jobs` exist.
+
+### Step 1.5 — Supabase Auth
+
+The same project handles identity. The API never sees a password and stores no password
+hash; it verifies tokens against `<SUPABASE_URL>/auth/v1/.well-known/jwks.json`, so
+nothing secret needs to reach EC2.
+
+1. **Authentication → Sign In / Providers → Email**: enable the provider and turn
+   **Confirm email off**. Email and password is the whole flow — creating an account
+   signs you straight in. With confirmation on, `signUp` returns no session and the sign
+   in screen reports that rather than appearing to hang, but nobody gets in.
+2. **Authentication → URL Configuration**: set **Site URL** to your Vercel production
+   domain and add `http://localhost:5173` under **Redirect URLs**. Nothing emails users
+   today, but this is where a password-reset link would go if you add one.
+3. **Settings → Data API**: copy the project URL and the **anon** key.
+   - `SUPABASE_URL` → the API's `.env.production`
+   - `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` → the Vercel project
+
+The anon key belongs in the browser bundle — that is what it is for. The **service-role**
+key does not go anywhere near either one; it bypasses every policy in the project.
+
+Local development uses this same project. There is no auth emulator, and running one
+would not test the thing that matters, which is whether real Supabase tokens verify.
 
 **Which pooler mode:** session mode (`:5432`). Transaction mode (`:6543`) is for
 serverless and does not support prepared statements — asyncpg would then need
@@ -243,13 +273,17 @@ curl https://api.yourdomain.com/api/health
 
 1. Import the GitHub repo.
 2. **Root directory:** `frontend` · **Framework:** Vite · Build `npm run build` · Output `dist`
-3. Environment variable, for all environments:
+3. Environment variables, for all environments:
 
    ```
-   VITE_API_BASE = https://api.yourdomain.com/api
+   VITE_API_BASE          = https://api.yourdomain.com/api
+   VITE_SUPABASE_URL      = https://<project-ref>.supabase.co
+   VITE_SUPABASE_ANON_KEY = <anon key from Settings -> Data API>
    ```
 
-   Vite inlines this at *build* time, so changing it requires a redeploy, not just a restart.
+   Vite inlines these at *build* time, so changing one requires a redeploy, not just a
+   restart. The anon key is meant to be in the bundle; the service-role key is not, and
+   must never be set here.
 
 4. Deploy, then add the resulting domain to `CORS_ORIGINS` on the server and restart the
    API:
@@ -267,10 +301,19 @@ CORS keeps the token stream between the browser and the API.
 
 Work through this in order; each step depends on the one before.
 
-1. `curl https://api.yourdomain.com/api/health` → all three `ok`
-2. Open the Vercel URL. The library loads (empty, not "can't reach the server")
-3. Upload a small PDF → status moves `queued → parsing → embedding → ready`
-4. Pinecone console shows the vector count rise
+1. `curl https://api.yourdomain.com/api/health` → every dependency `ok`. This is the
+   only route that answers without a token.
+2. `curl https://api.yourdomain.com/api/documents` with no `Authorization` header → `401`
+   with a `WWW-Authenticate: Bearer` header. If it returns data, the app is open to the
+   internet.
+3. Open the Vercel URL. You get the sign-in screen, not the library.
+4. Create an account. If the confirmation email's link points at localhost, the Site URL
+   in step 1.5 is still wrong.
+5. Upload a small PDF → status moves `queued → parsing → embedding → ready`
+6. Pinecone console shows the vector count rise, **inside a namespace named after your
+   user id** rather than in the default namespace
+7. Sign up a second account in a private window and confirm its library is empty and its
+   questions return nothing from the first account's document
 5. Ask a question → tokens appear **progressively**, not in one lump
    *(if they arrive all at once, `flush_interval -1` is missing from the Caddyfile)*
 6. A citation marker opens the source drawer with the correct passage
@@ -423,6 +466,10 @@ sentence. Generation is where the cost is.
 | `invalid sslmode value: "require"`, or auth failing with a password you know is right | `.env.production` has CRLF line endings, from being written or edited on Windows. Every value then carries a trailing carriage return, the password included. `file .env.production` will say "CRLF line terminators"; fix it with `dos2unix .env.production`. |
 | Uploads fail at `embedding` with an HTTP error | The embeddings endpoint. `GET /api/health` reports it separately from Pinecone. A 400 mentioning 512 tokens means a chunk is oversized — check `CHUNK_TOKENS`. |
 | Answers cite the wrong things after a working period | The provider may have changed the model behind `EMBEDDING_MODEL`. Run `pytest tests/test_embeddings.py`; the reference-vector test is there to catch exactly this. |
+| Every authenticated request is a 500 | `SUPABASE_URL` is unset, so there are no public keys to verify against. `GET /api/health` now reports `auth` separately for exactly this. |
+| Signing in works but every API call is 401 | The frontend and the API are pointed at different Supabase projects. `VITE_SUPABASE_URL` and `SUPABASE_URL` must be the same project. |
+| Confirmation emails link to localhost | Site URL under **Authentication → URL Configuration** is still the default. |
+| A user sees an empty library they know has documents | They signed in with a different account. Ownership is per user id, not per email alias — check `documents.owner_id` against the `sub` in their token. |
 | Retrieval returns nothing after migrating | Empty Pinecone index — data does not move with the database. Re-index. |
 
 ## Scaling past one box

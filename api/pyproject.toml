@@ -18,6 +18,10 @@ dependencies = [
     "arq==0.28.0",
     # config
     "pydantic-settings==2.15.0",
+    # auth: verify Supabase's JWTs locally. The [crypto] extra brings `cryptography`,
+    # which is what makes the asymmetric ES256/RS256 path possible -- Supabase advises
+    # against the legacy shared-secret HS256 one.
+    "pyjwt[crypto]==2.14.0",
     # langchain (components only -- no langchain-community / langchain-classic)
     "langchain-core==1.6.3",
     "langchain-openai==1.6.2",

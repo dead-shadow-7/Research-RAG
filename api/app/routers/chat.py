@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import json
 import logging
+import uuid
 from collections.abc import AsyncIterator
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 
+from app.auth import current_user_id, tenant_namespace
 from app.llm import stream_answer
 from app.retrieval import retrieve
 from app.schemas import ChatRequest
@@ -27,9 +29,9 @@ def sse(event: str, data: Any) -> str:
     return f"event: {event}\ndata: {json.dumps(data, default=str)}\n\n"
 
 
-async def _events(req: ChatRequest) -> AsyncIterator[str]:
+async def _events(req: ChatRequest, namespace: str) -> AsyncIterator[str]:
     try:
-        docs = await retrieve(req.query, req.document_ids)
+        docs = await retrieve(req.query, req.document_ids, namespace=namespace)
 
         # Sources go out before any token so the UI can render source cards while
         # the model is still thinking.
@@ -70,9 +72,14 @@ async def _events(req: ChatRequest) -> AsyncIterator[str]:
 
 
 @router.post("/stream")
-async def chat_stream(req: ChatRequest) -> StreamingResponse:
+async def chat_stream(
+    req: ChatRequest, user_id: uuid.UUID = Depends(current_user_id)
+) -> StreamingResponse:
+    # The dependency resolves before the response is constructed, so an unauthenticated
+    # caller gets a real 401 rather than a 200 whose body happens to open with an error
+    # frame -- which a streaming client would have to parse to discover it was rejected.
     return StreamingResponse(
-        _events(req),
+        _events(req, tenant_namespace(user_id)),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

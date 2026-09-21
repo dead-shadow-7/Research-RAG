@@ -51,15 +51,23 @@ async def retrieve(
     document_ids: list[str] | None = None,
     k: int | None = None,
     top_n: int | None = None,
+    *,
+    namespace: str,
 ) -> list[Document]:
-    """Return the chunks to put in front of the model, best first. May return none."""
+    """Return the chunks to put in front of the model, best first. May return none.
+
+    `namespace` is the tenant's, and it is the isolation: a search cannot reach vectors
+    outside it, so `document_ids` can only ever narrow the caller's own library.
+    """
     k = k or settings.retrieve_k
     top_n = top_n or settings.context_k
 
     store = get_vector_store()
     filter_ = {"document_id": {"$in": document_ids}} if document_ids else None
 
-    hits = await store.asimilarity_search_with_score(query, k=k, filter=filter_)
+    hits = await store.asimilarity_search_with_score(
+        query, k=k, filter=filter_, namespace=namespace
+    )
     if not hits:
         return []
 

@@ -5,9 +5,10 @@ import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Response, UploadFile, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.auth import current_user_id
 from app.config import settings
 from app.db import get_session
 from app.ingestion.parsers import UnsupportedSource, detect_source_type
@@ -34,17 +35,54 @@ async def _latest_progress(session: AsyncSession, doc_ids: list[uuid.UUID]) -> d
     return {job.document_id: job for job in rows.scalars()}
 
 
-async def _find_duplicate(session: AsyncSession, content_hash: str) -> Document | None:
-    """An identical upload that is already indexed or on its way.
+async def _find_duplicate(
+    session: AsyncSession, owner_id: uuid.UUID, content_hash: str
+) -> Document | None:
+    """An identical upload by the same owner that is already indexed or on its way.
 
     A failed document is not a duplicate -- re-uploading is how you retry one.
+
+    The owner filter is not optional. Matching on `content_hash` alone would mean that
+    uploading a file another tenant has already indexed returns *their* row, handing back
+    their title and attaching the uploader to a document they cannot see or delete.
     """
     rows = await session.execute(
         select(Document)
-        .where(Document.content_hash == content_hash, Document.status != DocStatus.FAILED)
+        .where(
+            Document.owner_id == owner_id,
+            Document.content_hash == content_hash,
+            Document.status != DocStatus.FAILED,
+        )
         .limit(1)
     )
     return rows.scalar_one_or_none()
+
+
+async def _owned(session: AsyncSession, document_id: uuid.UUID, owner_id: uuid.UUID) -> Document:
+    """Load a document belonging to this user, or 404.
+
+    404 rather than 403 for someone else's id: a 403 confirms the document exists, which
+    turns these routes into an oracle for enumerating other tenants' ids.
+    """
+    rows = await session.execute(
+        select(Document).where(Document.id == document_id, Document.owner_id == owner_id)
+    )
+    doc = rows.scalar_one_or_none()
+    if doc is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Document not found")
+    return doc
+
+
+async def _enforce_quota(session: AsyncSession, owner_id: uuid.UUID) -> None:
+    count = await session.scalar(
+        select(func.count()).select_from(Document).where(Document.owner_id == owner_id)
+    )
+    if (count or 0) >= settings.max_documents_per_user:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            f"Document limit reached ({settings.max_documents_per_user}). "
+            "Delete something before adding more.",
+        )
 
 
 def _to_out(doc: Document, job: IngestJob | None) -> DocumentOut:
@@ -63,6 +101,7 @@ async def upload_document(
     response: Response,
     background: BackgroundTasks,
     session: AsyncSession = Depends(get_session),
+    user_id: uuid.UUID = Depends(current_user_id),
 ) -> DocumentOut:
     """Accept a file, persist it, and queue ingestion. Never blocks on parsing."""
     if not file.filename:
@@ -71,6 +110,8 @@ async def upload_document(
         source_type = detect_source_type(file.filename)
     except UnsupportedSource as exc:
         raise HTTPException(status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, str(exc)) from exc
+
+    await _enforce_quota(session, user_id)
 
     doc_id = uuid.uuid4()
     dest = settings.upload_dir / f"{doc_id}{Path(file.filename).suffix.lower()}"
@@ -95,7 +136,7 @@ async def upload_document(
     # Re-uploading the same bytes would otherwise duplicate every vector in Pinecone,
     # which costs storage and lets one document answer twice.
     content_hash = hasher.hexdigest()
-    if (existing := await _find_duplicate(session, content_hash)) is not None:
+    if (existing := await _find_duplicate(session, user_id, content_hash)) is not None:
         dest.unlink(missing_ok=True)
         response.status_code = status.HTTP_200_OK
         jobs = await _latest_progress(session, [existing.id])
@@ -103,6 +144,7 @@ async def upload_document(
 
     doc = Document(
         id=doc_id,
+        owner_id=user_id,
         title=file.filename,
         source_type=source_type.value,
         source_uri=str(dest),
@@ -124,6 +166,7 @@ async def ingest_url(
     response: Response,
     background: BackgroundTasks,
     session: AsyncSession = Depends(get_session),
+    user_id: uuid.UUID = Depends(current_user_id),
 ) -> DocumentOut:
     """JSON sibling of the upload endpoint, for web pages.
 
@@ -135,13 +178,16 @@ async def ingest_url(
     """
     url = str(payload.url)
     content_hash = hashlib.sha256(url.encode()).hexdigest()
-    if (existing := await _find_duplicate(session, content_hash)) is not None:
+    if (existing := await _find_duplicate(session, user_id, content_hash)) is not None:
         response.status_code = status.HTTP_200_OK
         jobs = await _latest_progress(session, [existing.id])
         return _to_out(existing, jobs.get(existing.id))
 
+    await _enforce_quota(session, user_id)
+
     doc = Document(
         id=uuid.uuid4(),
+        owner_id=user_id,
         title=payload.title or url,
         source_type=SourceType.URL.value,
         source_uri=url,
@@ -158,8 +204,13 @@ async def ingest_url(
 
 
 @router.get("", response_model=list[DocumentOut])
-async def list_documents(session: AsyncSession = Depends(get_session)) -> list[DocumentOut]:
-    rows = await session.execute(select(Document).order_by(Document.created_at.desc()))
+async def list_documents(
+    session: AsyncSession = Depends(get_session),
+    user_id: uuid.UUID = Depends(current_user_id),
+) -> list[DocumentOut]:
+    rows = await session.execute(
+        select(Document).where(Document.owner_id == user_id).order_by(Document.created_at.desc())
+    )
     docs = list(rows.scalars())
     jobs = await _latest_progress(session, [d.id for d in docs])
     return [_to_out(d, jobs.get(d.id)) for d in docs]
@@ -167,26 +218,26 @@ async def list_documents(session: AsyncSession = Depends(get_session)) -> list[D
 
 @router.get("/{document_id}", response_model=DocumentOut)
 async def get_document(
-    document_id: uuid.UUID, session: AsyncSession = Depends(get_session)
+    document_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+    user_id: uuid.UUID = Depends(current_user_id),
 ) -> DocumentOut:
-    doc = await session.get(Document, document_id)
-    if doc is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Document not found")
+    doc = await _owned(session, document_id, user_id)
     jobs = await _latest_progress(session, [doc.id])
     return _to_out(doc, jobs.get(doc.id))
 
 
 @router.delete("/{document_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_document(
-    document_id: uuid.UUID, session: AsyncSession = Depends(get_session)
+    document_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+    user_id: uuid.UUID = Depends(current_user_id),
 ) -> None:
-    doc = await session.get(Document, document_id)
-    if doc is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Document not found")
+    doc = await _owned(session, document_id, user_id)
 
     # Vectors first: a failure here must not leave orphans in Pinecone that the
     # database no longer knows about.
-    await delete_document_data(document_id)
+    await delete_document_data(document_id, user_id)
 
     if doc.source_type != SourceType.URL.value:
         Path(doc.source_uri).unlink(missing_ok=True)

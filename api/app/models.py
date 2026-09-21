@@ -4,6 +4,10 @@ Postgres owns the document registry, ingest job state, and a mirror of every chu
 Pinecone owns the vectors. The link between them is `Chunk.vector_id`, which is
 deterministic (`{document_id}#{ordinal}`) because Pinecone serverless cannot delete
 by metadata filter -- deletion works by listing that ID prefix.
+
+Tenancy hangs off `Document.owner_id` alone. Chunks and jobs reach it through
+`document_id` and cascade from it, so there is exactly one column to filter on and
+exactly one place to get it wrong.
 """
 
 from __future__ import annotations
@@ -53,8 +57,18 @@ def _uuid() -> uuid.UUID:
 
 class Document(Base):
     __tablename__ = "documents"
+    # Dedupe is a per-owner question now: two tenants uploading the same file must get
+    # two documents, not one shared row.
+    __table_args__ = (Index("ix_documents_owner_hash", "owner_id", "content_hash"),)
 
     id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=_uuid)
+    # The Supabase user id from the token's `sub` claim, and also this tenant's Pinecone
+    # namespace -- see app.auth.tenant_namespace.
+    #
+    # Deliberately not a foreign key to `auth.users`: Supabase owns that schema, Alembic
+    # does not, and local development runs against plain Postgres where it does not exist
+    # at all. The cost is that deleting a Supabase user leaves these rows orphaned.
+    owner_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), index=True)
     title: Mapped[str] = mapped_column(String(512))
     source_type: Mapped[str] = mapped_column(String(16))
     source_uri: Mapped[str] = mapped_column(Text)
@@ -62,8 +76,8 @@ class Document(Base):
     status: Mapped[str] = mapped_column(String(16), default=DocStatus.QUEUED, index=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     chunk_count: Mapped[int] = mapped_column(Integer, default=0)
-    # sha256 of the raw bytes / url, for dedupe
-    content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    # sha256 of the raw bytes / url, for dedupe. Indexed with owner_id, not alone.
+    content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(

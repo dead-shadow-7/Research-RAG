@@ -20,6 +20,11 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+asyncpg://rag:rag@localhost:5432/rag"
     redis_url: str = "redis://localhost:6379"
 
+    # auth -- Supabase issues the tokens, this API only verifies them. The JWKS endpoint
+    # is derived from this URL, so there is one thing to configure rather than two.
+    supabase_url: str = ""
+    supabase_jwt_audience: str = "authenticated"
+
     # pinecone
     pinecone_api_key: str = ""
     pinecone_index: str = "rag-dev"
@@ -77,6 +82,9 @@ class Settings(BaseSettings):
     # storage / app
     upload_dir: Path = API_DIR / "storage" / "uploads"
     max_upload_mb: int = 50
+    # Per-tenant ceiling. Pinecone's free tier is 2 GB across the whole organisation, so
+    # an unbounded public sign-up form is a way to lose the index, not a feature.
+    max_documents_per_user: int = 50
 
     # Kept as a plain string: pydantic-settings tries to JSON-decode list-typed
     # env vars, which makes a bare comma-separated value a validation error.
@@ -105,6 +113,11 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     s = Settings()
+    # Resolved to an absolute path before anything uses it. `documents.source_uri` stores
+    # whatever this produces, so a relative UPLOAD_DIR would put relative paths in the
+    # database -- which then resolve against the working directory of whichever process
+    # reads them later, and the worker's is not always the API's.
+    s.upload_dir = s.upload_dir.resolve()
     s.upload_dir.mkdir(parents=True, exist_ok=True)
     return s
 

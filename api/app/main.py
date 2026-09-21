@@ -72,6 +72,19 @@ async def _probe_pinecone() -> str:
     return f"ok ({stats.get('total_vector_count', 0)} vectors)"
 
 
+async def _probe_auth() -> str:
+    """A configuration check, not a liveness one.
+
+    Deliberately does not fetch the JWKS: that would mean calling Supabase on every
+    health check to learn something that only changes at deploy time. Without
+    SUPABASE_URL every authenticated request fails as a 500, which is hard to diagnose
+    from the outside -- this is what makes that visible.
+    """
+    if not settings.supabase_url:
+        return "error: SUPABASE_URL is not set, so no request can be authenticated"
+    return "ok (configured)"
+
+
 async def _probe_embeddings() -> str:
     """Embedding is a remote call now, so it can fail on its own -- and silently, since
     nothing surfaces until an upload or a query does."""
@@ -86,6 +99,7 @@ async def health() -> dict:
     """Per-service status. Never raises -- a failing dependency is reported, not hidden."""
     results: dict[str, str] = {}
     probes = [
+        ("auth", _probe_auth),
         ("database", _probe_db),
         ("embeddings", _probe_embeddings),
         ("pinecone", _probe_pinecone),

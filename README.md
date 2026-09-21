@@ -12,6 +12,8 @@ React (Vite :5173) ──HTTP/SSE──▶ FastAPI (:8000) ──▶ Postgres  (
 
 | Piece | Choice |
 |---|---|
+| Auth | Supabase Auth; the API verifies JWTs locally against the project's public JWKS |
+| Tenancy | One user, one library — `documents.owner_id` in Postgres, a per-user namespace in Pinecone |
 | Ingestion | PDF (PyMuPDF), Word (docx2txt), Excel (openpyxl), plain text / Markdown, URL (trafilatura) |
 | Embeddings | `bge-base-en-v1.5`, 768-dim, over any OpenAI-compatible `/embeddings` endpoint |
 | Vector store | Pinecone serverless, cosine |
@@ -21,13 +23,26 @@ React (Vite :5173) ──HTTP/SSE──▶ FastAPI (:8000) ──▶ Postgres  (
 Ingestion never runs in the request path: uploading returns `202` immediately and an arq
 worker does the parsing, chunking and embedding while the UI polls for progress.
 
+Every document belongs to exactly one account. Postgres scopes rows by `owner_id` and
+Pinecone keeps each user's vectors in their own namespace, so a search cannot reach
+another tenant's passages even if a query were built wrongly.
+
 Deploying it: **[DEPLOYMENT.md](DEPLOYMENT.md)** — Vercel, AWS, Supabase and Pinecone,
 including the three code changes the app needs before it will run outside a dev proxy.
 
 ## Prerequisites
 
-Python 3.14, Node 22, Docker Desktop, a Pinecone API key, and credentials for an
-OpenAI-compatible LLM endpoint.
+Python 3.14, Node 22, Docker Desktop, a Pinecone API key, credentials for an
+OpenAI-compatible LLM endpoint, and a Supabase project for authentication.
+
+Supabase is used for auth in development too — there is no local emulator. Create a
+project, enable the email provider under **Authentication → Sign In / Providers**, turn
+**Confirm email off**, and take the project URL and anon key from **Settings → Data API**.
+Postgres still runs locally in Docker; only identity comes from Supabase.
+
+Sign-in is email and password, nothing else: creating an account signs you straight in.
+That is why *Confirm email* has to be off — with it on, `signUp` returns no session and
+nobody gets past the form.
 
 ## Setup
 
@@ -43,9 +58,13 @@ cd ../frontend
 npm install
 ```
 
-Copy `.env.example` to `.env` and fill in `PINECONE_API_KEY`, plus `OPENAI_BASE_URL`,
-`OPENAI_API_KEY` and `OPENAI_MODEL` for your provider. Everything else has a working
-default matching `docker-compose.yml`.
+Copy `.env.example` to `.env` and fill in `PINECONE_API_KEY`, `SUPABASE_URL`, plus
+`OPENAI_BASE_URL`, `OPENAI_API_KEY` and `OPENAI_MODEL` for your provider. Everything else
+has a working default matching `docker-compose.yml`.
+
+Copy `frontend/.env.example` to `frontend/.env.local` and fill in `VITE_SUPABASE_URL` and
+`VITE_SUPABASE_ANON_KEY` from the same project. Vite inlines these at build time, so a
+change needs a restart of `npm run dev` rather than just a reload.
 
 The Pinecone index is created automatically on first use, with the dimension taken from
 `EMBEDDING_DIM`.
@@ -89,6 +108,8 @@ Everything is read from `.env` through `app/config.py`. The settings worth knowi
 | `EMBEDDING_BASE_URL` / `EMBEDDING_API_KEY` | — | Blank means the same provider as `OPENAI_*`. |
 | `EMBED_BATCH_SIZE` | `128` | Texts per embeddings request. Flat from 32 to 128 on this provider. |
 | `MAX_UPLOAD_MB` | `50` | Enforced while streaming to disk. |
+| `SUPABASE_URL` | — | Required. The JWKS endpoint used to verify tokens is derived from it. |
+| `MAX_DOCUMENTS_PER_USER` | `50` | Per-tenant ceiling. Pinecone's free tier is 2 GB for the whole org. |
 
 ### Why `CONTEXT_K` is a ceiling
 
@@ -121,9 +142,12 @@ from the best of a bad set.
 `bge-base-en-v1.5`, not universal constants:
 
 ```bash
-.venv/Scripts/python tests/eval_retrieval.py              # current settings
-.venv/Scripts/python tests/eval_retrieval.py --no-floor   # unfiltered, for comparison
+.venv/Scripts/python tests/eval_retrieval.py --user <owner-id>
+.venv/Scripts/python tests/eval_retrieval.py --user <owner-id> --no-floor
 ```
+
+`--user` is required because vectors live in a per-user namespace: an evaluation has to
+say whose corpus it is measuring. The id is `documents.owner_id` for what you indexed.
 
 Add cases to `CASES` in that file as you add documents, including ones with
 `expect=None` — questions the corpus *should not* answer are the ones that catch a floor
@@ -173,7 +197,11 @@ reconcile conflicting sources. If multi-document answers start to look thin, try
 | `GET` | `/api/documents/{id}` | One document, with its latest job stage and error. |
 | `DELETE` | `/api/documents/{id}` | Removes vectors, rows and the stored file. |
 | `POST` | `/api/chat/stream` | `{query, history?, document_ids?}` → SSE. |
-| `GET` | `/api/health` | Per-dependency status. |
+| `GET` | `/api/health` | Per-dependency status. **The only unauthenticated route.** |
+
+Everything except `/api/health` requires `Authorization: Bearer <supabase-jwt>` and acts
+only on the caller's own documents. Another user's document id returns **404, not 403** —
+a 403 would confirm the id exists and turn the route into an enumeration oracle.
 
 The chat stream emits these SSE events, in this order:
 
@@ -200,8 +228,23 @@ stripping, Excel header repetition, and citation-marker parsing. `test_parsers.p
 its PDF cases until `make_fixture.py` has run. No test calls a live LLM — the generation
 tests drive a stubbed stream.
 
+`test_auth.py` generates its own ES256 keypair rather than talking to Supabase, so it
+tests our verification policy — including that an HS256 token signed with the public key
+is rejected. `test_tenancy.py` runs against the local Postgres inside a transaction that
+is rolled back afterwards, because the thing worth testing lives in the WHERE clauses and
+a mocked session would only test the mock.
+
 ## Things worth knowing before you change something
 
+- **`namespace` is a required argument on every `PineconeStore` method, never a
+  default.** It is what separates one tenant's vectors from another's, and Pinecone's
+  default namespace is the empty string — so an optional parameter someone forgets does
+  not raise, it quietly reads and writes a shared space. Required turns that mistake into
+  a `TypeError` at the call site instead of a leak nobody notices.
+- **Dedupe is scoped to the owner.** `_find_duplicate` matches on `(owner_id,
+  content_hash)`. On `content_hash` alone, uploading a file another tenant already
+  indexed would hand back *their* row — title included — and attach you to a document you
+  cannot see or delete.
 - **Vector IDs are `{document_id}#{ordinal}` on purpose.** Pinecone serverless cannot
   delete by metadata filter, so deleting a document walks that ID prefix. Never let
   `add_documents` generate its own IDs. Note `index.list()` yields `ListItem` objects,

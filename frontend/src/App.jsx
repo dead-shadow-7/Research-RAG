@@ -1,5 +1,7 @@
 import { useMemo, useState } from 'react'
 
+import AuthScreen from './auth/AuthScreen'
+import { useAuth } from './auth/AuthProvider'
 import Composer from './components/Composer'
 import Conversation from './components/Conversation'
 import Library from './components/Library'
@@ -9,6 +11,18 @@ import { useChatStream } from './hooks/useChatStream'
 import { useDocuments } from './hooks/useDocuments'
 
 export default function App() {
+  const { user, loading } = useAuth()
+
+  // Two screens gated by one condition -- not worth a router. Rendering nothing while
+  // the stored session loads avoids flashing the sign-in form at someone already signed
+  // in.
+  if (loading) return <div className="h-full bg-paper" />
+  if (!user) return <AuthScreen />
+  return <Workspace />
+}
+
+function Workspace() {
+  const { user, signOut } = useAuth()
   const { data: documents = [], isError } = useDocuments()
   const { messages, busy, ask, stop, reset } = useChatStream()
   const [selectedIds, setSelectedIds] = useState([])
@@ -34,14 +48,25 @@ export default function App() {
             {isError ? 'offline' : `${readyDocs.length} indexed · ${indexedChunks} chunks`}
           </p>
         </div>
-        {messages.length > 0 && (
+        <div className="flex items-center gap-4">
+          {messages.length > 0 && (
+            <button
+              onClick={reset}
+              className="font-mono text-[10px] tracking-wide text-ink-soft uppercase hover:text-ink"
+            >
+              New thread
+            </button>
+          )}
+          <span className="hidden max-w-[16rem] truncate font-mono text-[10px] tracking-wide text-ink-faint sm:block">
+            {user.email}
+          </span>
           <button
-            onClick={reset}
+            onClick={signOut}
             className="font-mono text-[10px] tracking-wide text-ink-soft uppercase hover:text-ink"
           >
-            New thread
+            Sign out
           </button>
-        )}
+        </div>
       </header>
 
       <div className="flex min-h-0 flex-1 flex-col md:flex-row">

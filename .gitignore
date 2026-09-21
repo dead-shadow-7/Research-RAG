@@ -16,6 +16,10 @@ __pycache__/
 # Runtime storage (uploaded files)
 api/storage/uploads/*
 !api/storage/uploads/.gitkeep
+# A relative UPLOAD_DIR resolves against the process's working directory, so running
+# uvicorn from the repo root drops a second uploads tree here. Never commit one: these
+# are whatever documents somebody uploaded.
+/storage/
 
 # Node
 node_modules/

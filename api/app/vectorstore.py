@@ -11,6 +11,12 @@ Two Pinecone serverless constraints drive the design:
      (`{document_id}#{ordinal}`) and deletion lists that ID prefix.
   2. Metadata values must be str / number / bool / list[str] -- nulls are rejected,
      so `_clean_metadata` drops them.
+
+And one tenancy rule: **`namespace` is required on every method here, never defaulted.**
+A namespace is what isolates one user's vectors from another's, and Pinecone's default
+namespace is the empty string -- so an optional parameter that a caller forgets does not
+raise, it quietly reads and writes a shared space. Required turns that mistake into a
+TypeError at the call site instead of a cross-tenant leak nobody notices.
 """
 
 from __future__ import annotations
@@ -99,6 +105,7 @@ class PineconeStore(VectorStore):
         metadatas: list[dict] | None = None,
         *,
         ids: list[str] | None = None,
+        namespace: str,
         **kwargs: Any,
     ) -> list[str]:
         texts = list(texts)
@@ -121,27 +128,43 @@ class PineconeStore(VectorStore):
             for vid, vec, meta, text in zip(ids, vectors, metadatas, texts, strict=True)
         ]
         for i in range(0, len(records), UPSERT_BATCH):
-            self._index.upsert(vectors=records[i : i + UPSERT_BATCH])
+            self._index.upsert(vectors=records[i : i + UPSERT_BATCH], namespace=namespace)
         return ids
 
     def add_documents(
-        self, documents: list[Document], *, ids: list[str] | None = None, **kwargs: Any
+        self,
+        documents: list[Document],
+        *,
+        ids: list[str] | None = None,
+        namespace: str,
+        **kwargs: Any,
     ) -> list[str]:
         return self.add_texts(
             [d.page_content for d in documents],
             [dict(d.metadata) for d in documents],
             ids=ids,
+            namespace=namespace,
             **kwargs,
         )
 
     # --- reads ----------------------------------------------------------------
 
     def similarity_search_with_score(
-        self, query: str, k: int = 4, filter: dict | None = None, **kwargs: Any
+        self,
+        query: str,
+        k: int = 4,
+        filter: dict | None = None,
+        *,
+        namespace: str,
+        **kwargs: Any,
     ) -> list[tuple[Document, float]]:
         vector = self._embeddings.embed_query(query)
         res = self._index.query(
-            vector=vector, top_k=k, include_metadata=True, filter=filter or None
+            vector=vector,
+            top_k=k,
+            include_metadata=True,
+            filter=filter or None,
+            namespace=namespace,
         )
         out: list[tuple[Document, float]] = []
         for match in res.get("matches", []):
@@ -152,28 +175,33 @@ class PineconeStore(VectorStore):
         return out
 
     def similarity_search(
-        self, query: str, k: int = 4, filter: dict | None = None, **kwargs: Any
+        self, query: str, k: int = 4, filter: dict | None = None, *, namespace: str, **kwargs: Any
     ) -> list[Document]:
-        return [d for d, _ in self.similarity_search_with_score(query, k, filter, **kwargs)]
+        return [
+            d
+            for d, _ in self.similarity_search_with_score(
+                query, k, filter, namespace=namespace, **kwargs
+            )
+        ]
 
     # --- deletes --------------------------------------------------------------
 
-    def delete(self, ids: list[str] | None = None, **kwargs: Any) -> None:
+    def delete(self, ids: list[str] | None = None, *, namespace: str, **kwargs: Any) -> None:
         if ids:
-            self._index.delete(ids=ids)
+            self._index.delete(ids=ids, namespace=namespace)
 
-    def delete_document(self, document_id: str) -> int:
+    def delete_document(self, document_id: str, *, namespace: str) -> int:
         """Delete every vector belonging to a document.
 
         Pinecone serverless has no delete-by-filter, so this walks the ID prefix.
         """
         deleted = 0
-        for batch in self._index.list(prefix=f"{document_id}#"):
+        for batch in self._index.list(prefix=f"{document_id}#", namespace=namespace):
             # `list()` yields ListItem objects, not bare strings, and `delete()`
             # rejects anything that isn't a str.
             ids = [_vector_id(item) for item in batch]
             if ids:
-                self._index.delete(ids=ids)
+                self._index.delete(ids=ids, namespace=namespace)
                 deleted += len(ids)
         return deleted
 
@@ -187,13 +215,19 @@ class PineconeStore(VectorStore):
         metadatas: list[dict] | None = None,
         *,
         ids: list[str] | None = None,
+        namespace: str,
         **kwargs: Any,
     ) -> PineconeStore:
         store = cls(get_index(), embedding)
-        store.add_texts(texts, metadatas, ids=ids)
+        store.add_texts(texts, metadatas, ids=ids, namespace=namespace)
         return store
 
 
 @lru_cache(maxsize=1)
 def get_vector_store() -> PineconeStore:
+    """Process-wide singleton.
+
+    There is nothing per-tenant to cache: the namespace travels with each call rather
+    than being bound to the object, so one store serves every user.
+    """
     return PineconeStore(get_index(), get_embeddings())
