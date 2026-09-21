@@ -110,6 +110,7 @@ Everything is read from `.env` through `app/config.py`. The settings worth knowi
 | `MAX_UPLOAD_MB` | `50` | Enforced while streaming to disk. |
 | `SUPABASE_URL` | — | Required. The JWKS endpoint used to verify tokens is derived from it. |
 | `MAX_DOCUMENTS_PER_USER` | `50` | Per-tenant ceiling. Pinecone's free tier is 2 GB for the whole org. |
+| `LANGSMITH_TRACING` / `LANGSMITH_API_KEY` | `false` / — | Both, or neither. `config.py` exports them to the environment, which is where the SDK reads them from. `/api/health` reports whether tracing is live. |
 
 ### Why `CONTEXT_K` is a ceiling
 

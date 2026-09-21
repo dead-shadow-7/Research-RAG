@@ -85,6 +85,20 @@ async def _probe_auth() -> str:
     return "ok (configured)"
 
 
+async def _probe_tracing() -> str:
+    """Informational, never an error -- tracing is optional and off by default.
+
+    It is here because the failure mode is invisible otherwise: LangSmith reads the
+    process environment, so variables set only in `.env` are silently ignored and you
+    find out by noticing an empty project hours later.
+    """
+    from langsmith.utils import tracing_is_enabled
+
+    if not tracing_is_enabled():
+        return "ok (tracing off)"
+    return f"ok (tracing to {settings.langsmith_project!r})"
+
+
 async def _probe_embeddings() -> str:
     """Embedding is a remote call now, so it can fail on its own -- and silently, since
     nothing surfaces until an upload or a query does."""
@@ -103,6 +117,7 @@ async def health() -> dict:
         ("database", _probe_db),
         ("embeddings", _probe_embeddings),
         ("pinecone", _probe_pinecone),
+        ("langsmith", _probe_tracing),
     ]
     if not settings.inline_ingestion:
         probes.insert(1, ("redis", _probe_redis))

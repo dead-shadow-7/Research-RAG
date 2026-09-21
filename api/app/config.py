@@ -1,5 +1,6 @@
 """Single source of truth for configuration. Everything comes from env / .env."""
 
+import os
 from functools import lru_cache
 from pathlib import Path
 
@@ -79,6 +80,15 @@ class Settings(BaseSettings):
     # property of the model, not a universal constant.
     context_min_score: float = 0.50
 
+    # observability -- LangSmith traces every retrieval and generation, which is the
+    # fastest way to see why an answer was bad. The SDK reads these from the *process
+    # environment*, not from here, so get_settings() exports them; listing them as
+    # fields is what stops `extra="ignore"` from silently swallowing them.
+    langsmith_tracing: bool = False
+    langsmith_api_key: str = ""
+    langsmith_project: str = "rag"
+    langsmith_endpoint: str = ""
+
     # storage / app
     upload_dir: Path = API_DIR / "storage" / "uploads"
     max_upload_mb: int = 50
@@ -110,9 +120,31 @@ class Settings(BaseSettings):
         return self.max_upload_mb * 1024 * 1024
 
 
+def _export_langsmith(s: "Settings") -> None:
+    """Put the LangSmith variables where the SDK actually looks.
+
+    `.env` is read by pydantic-settings into this object; it is not a shell file and
+    nothing exports it. LangSmith reads `os.environ`, so without this, setting
+    LANGSMITH_TRACING in `.env` does nothing at all and gives no indication of why.
+    (Under Docker it works, because compose's `env_file` does reach the environment --
+    which makes this fail locally and pass in production, the worst shape of bug.)
+
+    `setdefault` so a real environment variable always wins over the file.
+    """
+    if not s.langsmith_tracing:
+        return
+    os.environ.setdefault("LANGSMITH_TRACING", "true")
+    os.environ.setdefault("LANGSMITH_PROJECT", s.langsmith_project)
+    if s.langsmith_api_key:
+        os.environ.setdefault("LANGSMITH_API_KEY", s.langsmith_api_key)
+    if s.langsmith_endpoint:
+        os.environ.setdefault("LANGSMITH_ENDPOINT", s.langsmith_endpoint)
+
+
 @lru_cache
 def get_settings() -> Settings:
     s = Settings()
+    _export_langsmith(s)
     # Resolved to an absolute path before anything uses it. `documents.source_uri` stores
     # whatever this produces, so a relative UPLOAD_DIR would put relative paths in the
     # database -- which then resolve against the working directory of whichever process
