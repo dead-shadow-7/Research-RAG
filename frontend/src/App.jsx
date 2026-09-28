@@ -7,6 +7,7 @@ import Conversation from './components/Conversation'
 import Library from './components/Library'
 import SourceDrawer from './components/SourceDrawer'
 import StarField from './components/StarField'
+import { IconLibrary } from './components/icons'
 import { useChatStream } from './hooks/useChatStream'
 import { useDocuments } from './hooks/useDocuments'
 
@@ -27,6 +28,9 @@ function Workspace() {
   const { messages, busy, ask, stop, reset } = useChatStream()
   const [selectedIds, setSelectedIds] = useState([])
   const [openMark, setOpenMark] = useState(null)
+  // Below md the library is an off-canvas drawer; at md and up it is always docked and
+  // this flag has no visible effect.
+  const [libraryOpen, setLibraryOpen] = useState(false)
 
   const readyDocs = useMemo(() => documents.filter((d) => d.status === 'ready'), [documents])
   const indexedChunks = readyDocs.reduce((n, d) => n + d.chunk_count, 0)
@@ -42,9 +46,22 @@ function Workspace() {
   return (
     <div className="flex h-full flex-col">
       <header className="edge-lit flex items-center justify-between border-b border-rule bg-panel px-5 py-2.5">
-        <div className="flex items-baseline gap-3">
+        <div className="flex items-center gap-3 md:items-baseline">
+          <button
+            onClick={() => setLibraryOpen(true)}
+            aria-label="Open library"
+            className="-ml-2 flex items-center gap-1.5 rounded-sm p-2 text-ink-soft transition hover:text-ink md:hidden"
+          >
+            <IconLibrary size={17} />
+            <span className="font-mono text-[10px] tracking-wide uppercase">
+              {documents.length}
+              {selectedIds.length > 0 && (
+                <span className="text-signal"> · {selectedIds.length} sel</span>
+              )}
+            </span>
+          </button>
           <h1 className="font-display text-[17px] tracking-tight">Marginalia</h1>
-          <p className="font-mono text-[10px] tracking-wide text-ink-faint uppercase">
+          <p className="hidden font-mono text-[10px] tracking-wide text-ink-faint uppercase md:block">
             {isError ? 'offline' : `${readyDocs.length} indexed · ${indexedChunks} chunks`}
           </p>
         </div>
@@ -69,14 +86,25 @@ function Workspace() {
         </div>
       </header>
 
-      <div className="flex min-h-0 flex-1 flex-col md:flex-row">
-        <Library selectedIds={selectedIds} onSelectionChange={setSelectedIds} />
+      <div className="flex min-h-0 flex-1">
+        <Library
+          selectedIds={selectedIds}
+          onSelectionChange={setSelectedIds}
+          open={libraryOpen}
+          onClose={() => setLibraryOpen(false)}
+          summary={isError ? 'offline' : `${readyDocs.length} indexed · ${indexedChunks} chunks`}
+        />
 
         {/* The star field is a backdrop: it sits behind the thread, and the composer's
             own panel covers it at the bottom. */}
         <main className="relative flex min-w-0 flex-1 flex-col bg-void">
           <StarField />
-          <Conversation messages={messages} ready={ready} onOpenSource={setOpenMark} />
+          <Conversation
+            messages={messages}
+            ready={ready}
+            onOpenSource={setOpenMark}
+            onOpenLibrary={() => setLibraryOpen(true)}
+          />
           <Composer
             onAsk={(q) => ask(q, selectedIds.length ? selectedIds : null)}
             onStop={stop}

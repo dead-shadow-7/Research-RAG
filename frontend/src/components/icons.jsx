@@ -112,6 +112,13 @@ export const IconClose = (p) => (
   </Svg>
 )
 
+/* Library: three spines on a shelf, one leaning. */
+export const IconLibrary = (p) => (
+  <Svg {...p}>
+    <path d="M5.5 4.5v15M9.5 4.5v15M13.5 5.5l4.5 13.5M3.5 19.5h17" />
+  </Svg>
+)
+
 export const IconPlus = (p) => (
   <Svg {...p}>
     <path d="M12 5v14M5 12h14" />

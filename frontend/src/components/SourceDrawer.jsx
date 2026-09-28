@@ -41,7 +41,7 @@ export default function SourceDrawer({ mark, sources, onClose }) {
           </div>
           <button
             onClick={onClose}
-            className="shrink-0 rounded-sm border border-rule p-1 text-ink-soft transition hover:border-ink-soft hover:text-ink"
+            className="shrink-0 rounded-sm border border-rule p-2 text-ink-soft md:p-1 transition hover:border-ink-soft hover:text-ink"
             aria-label="Close source"
             title="Close"
           >

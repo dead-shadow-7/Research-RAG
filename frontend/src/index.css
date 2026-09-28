@@ -31,6 +31,9 @@ html,
 body,
 #root {
   height: 100%;
+  /* The dynamic viewport tracks a mobile browser's collapsing toolbar, so the composer
+     is never pushed under it. Browsers without dvh keep the line above. */
+  height: 100dvh;
 }
 
 /* Thread geometry, shared by the answer grid, the question block and the composer.
@@ -101,11 +104,16 @@ body {
   opacity: 0.3;
 }
 
-/* One shared focus treatment, so keyboard users get the same affordance everywhere. */
-:where(button, a, input, textarea, [tabindex]):focus-visible {
-  outline: 2px solid var(--color-signal);
-  outline-offset: 2px;
-  border-radius: 2px;
+/* One shared focus treatment, so keyboard users get the same affordance everywhere.
+   It lives in the base layer so a field that draws its own focus state (a border that
+   lights up) can opt out with `focus:outline-none` -- unlayered, this rule beat every
+   utility and drew a second ring inside those fields. */
+@layer base {
+  :where(button, a, input, textarea, [tabindex]):focus-visible {
+    outline: 2px solid var(--color-signal);
+    outline-offset: 2px;
+    border-radius: 2px;
+  }
 }
 
 /* Tailwind v4's preflight drops the pointer cursor from buttons, so every control in

@@ -21,7 +21,8 @@ export default function Composer({ onAsk, onStop, busy, disabled, hint }) {
   }
 
   return (
-    <div className="edge-lit relative border-t border-rule bg-panel px-5 py-4 md:px-8">
+    // The bottom padding clears the home indicator on notched phones.
+    <div className="edge-lit relative border-t border-rule bg-panel px-4 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] md:px-8 md:py-4">
       {/* Exactly the width of the thread above it, so the two share an edge. */}
       <div className="mx-auto w-full max-w-[var(--w-thread)]">
         <div className="flex items-end gap-3 rounded border border-rule bg-raised px-3 py-2 transition focus-within:border-signal">
@@ -39,12 +40,13 @@ export default function Composer({ onAsk, onStop, busy, disabled, hint }) {
             }}
             onKeyDown={onKeyDown}
             placeholder={disabled ? hint : 'Ask about your documents'}
-            className="max-h-40 min-w-0 flex-1 resize-none bg-transparent text-[14px] leading-relaxed placeholder:text-ink-faint focus:outline-none disabled:cursor-not-allowed"
+            // 16px below md: iOS Safari zooms the page into any smaller input on focus.
+            className="max-h-40 min-w-0 flex-1 resize-none bg-transparent py-1.5 text-[16px] leading-6 md:py-1 md:text-[14px] md:leading-5 placeholder:text-ink-faint focus:outline-none disabled:cursor-not-allowed"
           />
           {busy ? (
             <button
               onClick={onStop}
-              className="mb-0.5 flex size-7 shrink-0 items-center justify-center rounded-sm border border-rule text-ink-soft transition hover:border-alert hover:text-alert"
+              className="flex size-9 shrink-0 items-center justify-center rounded-sm border border-rule text-ink-soft md:size-7 transition hover:border-alert hover:text-alert"
               aria-label="Stop generating"
               title="Stop"
             >
@@ -54,7 +56,7 @@ export default function Composer({ onAsk, onStop, busy, disabled, hint }) {
             <button
               onClick={submit}
               disabled={disabled || !value.trim()}
-              className="mb-0.5 flex size-7 shrink-0 items-center justify-center rounded-sm border border-signal/40 bg-signal-soft text-signal transition hover:border-signal disabled:border-rule disabled:bg-transparent disabled:text-ink-faint"
+              className="flex size-9 shrink-0 items-center justify-center rounded-sm border border-signal/40 md:size-7 bg-signal-soft text-signal transition hover:border-signal disabled:border-rule disabled:bg-transparent disabled:text-ink-faint"
               aria-label="Ask"
               title="Ask"
             >
@@ -62,7 +64,8 @@ export default function Composer({ onAsk, onStop, busy, disabled, hint }) {
             </button>
           )}
         </div>
-        <p className="mt-1.5 font-mono text-[10px] tracking-wide text-ink-faint uppercase">
+        {/* Keyboard shortcuts mean nothing on a phone's on-screen keyboard. */}
+        <p className="mt-1.5 hidden font-mono text-[10px] tracking-wide text-ink-faint uppercase md:block">
           Enter to ask · Shift + Enter for a new line
         </p>
       </div>
